@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Each icon's \"source\" is either an Icons8 page URL (fetched by its numeric",
+    "ID, giving exactly that icon) or a bare name (fetched by name within",
+    "\"style\" below, keeping a set of icons visually consistent). The same word",
+    "yields different artwork between the two forms — but note BOTH default to",
+    "solid black: Icons8's \"logo\" entries are monochrome silhouettes, not the",
+    "brand's colour marks.",
+    "\"iconColor\" therefore tints BOTH forms (the UI is a permanent dark theme,",
+    "so an untinted icon is black-on-near-black and effectively invisible).",
+    "Override per icon with \"color\", or opt out entirely with",
+    "\"preserveColors\": true for genuinely multi-colour artwork.",
+    "The file on disk always wins: if data/icons_src/icons8/<id>.png exists it",
+    "is used as-is and never re-downloaded or overwritten (so hand-placed and",
+    "hand-edited art is safe, and offline builds just work). Only a missing",
+    "file triggers a download. To pick up a changed setting below — iconColor,",
+    "color, preserveColors, style, sourceExportSize — DELETE the PNG and",
+    "rebuild; editing the setting alone will not re-fetch it.",
+    "\"welcomeIcon\" picks which icon the welcome screen renders — see",
+    "kWelcomeIcon in the generated src/generated/icon_registry_gen.h."
+  ],
+  "style": "ios-filled",
+  "sourceExportSize": 64,
+  "iconColor": "FFFFFF",
+  "welcomeIcon": "icon_google",
+  "attribution": "Icons by Icons8 - https://icons8.com",
+  "icons": [
+    {
+      "id": "icon_google",
+      "source": "https://icons8.com/icon/17950/google-logo",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_google.png"
+    }
+  ]
+}

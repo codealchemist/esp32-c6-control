@@ -1,0 +1,13 @@
+# Local logs (serial monitor output contains device MACs, serial ports, SSIDs, home paths)
+*.log
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Local environment / secrets
+.env
+.env.*
+*.local

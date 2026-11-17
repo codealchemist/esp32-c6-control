@@ -11,6 +11,10 @@
 bool touchInit();
 
 // Current touch state in landscape screen coordinates (320x172, same
-// orientation as the display). Cheap to call every frame: it only touches
-// I2C after the controller signals new data, or while a finger is down.
+// orientation as the display). Cheap to call every frame: it reads the
+// controller at most every 20ms, or sooner when its INT line fires.
 bool touchRead(int16_t &x, int16_t &y);
+
+// Raw-report logging, toggled from the serial console ('t').
+void touchSetDebug(bool on);
+bool touchDebugEnabled();

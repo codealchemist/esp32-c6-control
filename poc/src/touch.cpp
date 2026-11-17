@@ -22,10 +22,18 @@ constexpr int16_t kNativeH = 320;
 // spurious click). 20ms ≈ LVGL's own input read period.
 constexpr uint32_t kPollMs = 20;
 
-// Logs every raw report that differs from the previous one. Bring-up aid for
-// the touch path; noisy, turn off once touch is verified on hardware.
-constexpr bool kTouchDebug = false;
+// Logs every raw report that differs from the previous one. Toggled at
+// runtime (serial 't', see touchSetDebug) so the touch path can be inspected
+// on a deployed board without reflashing.
+bool gTouchDebug = false;
 uint8_t gLastRaw[6] = {0};
+
+// Failed reads are otherwise silent — a bus fault would just look like
+// "nobody is touching". Counted and reported periodically instead of per
+// failure (at 50 reads/s, per-failure logging would flood the console).
+uint32_t gReadErrors = 0;
+uint32_t gReadOk = 0;
+uint32_t gLastErrReportMs = 0;
 
 volatile bool gIntFlag = false;
 bool gReady = false;
@@ -50,10 +58,18 @@ bool readReg(uint8_t reg, uint8_t *buf, size_t len) {
 // Reads one report. Returns false on a bus error (state left unchanged).
 bool poll() {
   uint8_t d[14];
-  if (!readReg(kRegTouchData, d, sizeof(d))) return false;
   gLastReadMs = millis();
+  if (!readReg(kRegTouchData, d, sizeof(d))) {
+    gReadErrors++;
+    if (millis() - gLastErrReportMs >= 5000) {
+      gLastErrReportMs = millis();
+      Serial.printf("[Touch] %u read error(s) so far (%u ok)\n", gReadErrors, gReadOk);
+    }
+    return false;
+  }
+  gReadOk++;
 
-  if (kTouchDebug && memcmp(d, gLastRaw, sizeof(gLastRaw)) != 0) {
+  if (gTouchDebug && memcmp(d, gLastRaw, sizeof(gLastRaw)) != 0) {
     memcpy(gLastRaw, d, sizeof(gLastRaw));
     Serial.printf("[Touch] raw %02x %02x %02x %02x %02x %02x\n", d[0], d[1], d[2], d[3], d[4],
                   d[5]);
@@ -123,3 +139,12 @@ bool touchRead(int16_t &x, int16_t &y) {
   y = gY;
   return gPressed;
 }
+
+void touchSetDebug(bool on) {
+  gTouchDebug = on;
+  memset(gLastRaw, 0xFF, sizeof(gLastRaw));  // print the next report even if unchanged
+  Serial.printf("[Touch] debug %s (ready=%d, reads ok=%u, errors=%u, int=%d)\n", on ? "on" : "off",
+                gReady, gReadOk, gReadErrors, digitalRead(PIN_TOUCH_INT));
+}
+
+bool touchDebugEnabled() { return gTouchDebug; }

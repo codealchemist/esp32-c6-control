@@ -21,6 +21,7 @@
 #include "net.h"
 #include "pins.h"
 #include "provisioning.h"
+#include "touch.h"
 
 namespace {
 
@@ -48,6 +49,8 @@ void serialCommandPoll() {
       gSerialKnobSteps++;
     } else if (c == '-') {
       gSerialKnobSteps--;
+    } else if (c == 't' || c == 'T') {
+      touchSetDebug(!touchDebugEnabled());
     } else if (c == 'w' || c == 'W') {
       // What the board itself can see — the C6 is 2.4 GHz only, so this is
       // the quickest way to tell "wrong SSID" from "network is 5 GHz-only"

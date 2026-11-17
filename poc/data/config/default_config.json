@@ -1,0 +1,107 @@
+{
+  "configVersion": 1,
+  "mqtt": {
+    "brokerHost": "",
+    "brokerPort": 0,
+    "useTls": false,
+    "clientId": "",
+    "username": "",
+    "topics": {
+      "commands": "",
+      "commandResults": "",
+      "messages": "",
+      "config": "",
+      "status": ""
+    }
+  },
+  "menu": [
+    {
+      "id": "lights-on",
+      "type": "task",
+      "label": "Lights On",
+      "icon": "icon_light_on",
+      "task": {
+        "payload": { "taskId": "lights-on", "state": "on" },
+        "qos": 1,
+        "params": []
+      }
+    },
+    {
+      "id": "player-volume",
+      "type": "task",
+      "label": "Volume",
+      "icon": "icon_volume",
+      "task": {
+        "payload": { "taskId": "player-volume" },
+        "qos": 1,
+        "expectsResult": true,
+        "params": [
+          {
+            "key": "level",
+            "type": "int",
+            "min": 0,
+            "max": 100,
+            "step": 1,
+            "default": 40,
+            "encoderAdjustable": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "messages",
+      "type": "folder",
+      "label": "Messages",
+      "icon": "icon_mail",
+      "binding": "message_inbox",
+      "children": []
+    },
+    {
+      "id": "scenes",
+      "type": "folder",
+      "label": "Scenes",
+      "icon": "icon_folder",
+      "children": [
+        {
+          "id": "scene-movie",
+          "type": "task",
+          "label": "Movie",
+          "icon": "icon_movie",
+          "task": {
+            "payload": { "taskId": "scene-movie", "name": "movie" },
+            "qos": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "settings",
+      "type": "folder",
+      "label": "Settings",
+      "icon": "icon_settings",
+      "children": [
+        {
+          "id": "reprovision",
+          "type": "action",
+          "label": "Reset Wi-Fi/MQTT",
+          "icon": "icon_reset",
+          "action": "reprovision"
+        },
+        {
+          "id": "restore-config",
+          "type": "action",
+          "label": "Restore Default Config",
+          "icon": "icon_restore",
+          "action": "restoreDefaultConfig"
+        },
+        {
+          "id": "about",
+          "type": "action",
+          "label": "About",
+          "icon": "icon_info",
+          "action": "showAbout"
+        }
+      ]
+    }
+  ]
+}

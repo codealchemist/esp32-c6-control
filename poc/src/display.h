@@ -2,15 +2,9 @@
 
 #include <stdint.h>
 
-// ST7789 init (LovyanGFX) + LVGL v9 wiring, for the confirmed Waveshare
-// ESP32-C6-LCD-1.47 pins/offsets (docs/ARCHITECTURE.md §2).
-//
-// KNOWN RISK: the panel offset/rotation values below (offset_x=34,
-// setRotation(1)) are carried over from Waveshare's own raw-SPI reference
-// init (see tools/display_smoke_test), translated into LovyanGFX's config
-// struct rather than copied byte-for-byte — this translation has not been
-// verified on real hardware. If the image appears shifted, cropped, or
-// mirrored, this is the first place to check.
+// JD9853 panel init (LovyanGFX) + LVGL v9 wiring, plus the AXS5106L touch
+// panel as an LVGL pointer input — Waveshare ESP32-C6-Touch-LCD-1.47 (see
+// pins.h). Landscape, 320x172.
 
 void displayInit();
 

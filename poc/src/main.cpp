@@ -13,6 +13,7 @@
 #include <WiFi.h>
 #include <lvgl.h>
 
+#include "config_store.h"
 #include "device_info.h"
 #include "display.h"
 #include "generated/icon_registry_gen.h"
@@ -135,6 +136,27 @@ lv_obj_t *makeBlankScreen() {
   return scr;
 }
 
+// A touchable button that feeds `ev` into the normal input flow (see
+// inputInject) — so every screen keeps one code path for encoder, physical
+// button, and touch.
+lv_obj_t *addTouchButton(lv_obj_t *parent, const char *text, InputEvent ev, lv_align_t align,
+                         int32_t x, int32_t y, int32_t w = 64, int32_t h = 34) {
+  lv_obj_t *btn = lv_button_create(parent);
+  lv_obj_set_size(btn, w, h);
+  lv_obj_align(btn, align, x, y);
+  lv_obj_t *label = lv_label_create(btn);
+  lv_label_set_text(label, text);
+  lv_obj_center(label);
+  lv_obj_add_event_cb(
+      btn,
+      [](lv_event_t *e) {
+        const auto ev = static_cast<InputEvent>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+        inputInject(ev);
+      },
+      LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(ev)));
+  return btn;
+}
+
 lv_obj_t *gWelcomeScreen = nullptr;
 
 void showWelcomeScreen() {
@@ -164,7 +186,10 @@ void showDeviceInfoScreen() {
   // On-screen equivalent of the Serial hint below — without an encoder wired
   // up there is otherwise nothing telling you the screen will move on by
   // itself, which reads as a hang.
-  lv_list_add_text(list, ("-- push, or wait " + String(kIdleAdvanceMs / 1000) + "s --").c_str());
+  lv_list_add_text(list, ("-- tap Next, push, or wait " + String(kIdleAdvanceMs / 1000) + "s --").c_str());
+  // Room below the last row so the floating Next button never hides it.
+  lv_obj_set_style_pad_bottom(list, 44, 0);
+  addTouchButton(scr, "Next", InputEvent::EncoderPressShort, LV_ALIGN_BOTTOM_RIGHT, -6, -6);
 
   Serial.printf("[DeviceInfo] scroll with the encoder, push to continue "
                  "(auto-advances after %ums idle)\n",
@@ -187,7 +212,10 @@ void showDeviceInfoScreen() {
       lastActivity = millis();
     } else if (ev == InputEvent::EncoderPressShort || ev == InputEvent::EncoderPressLong) {
       break;
-    } else if ((millis() - lastActivity) >= kIdleAdvanceMs) {
+    } else if ((millis() - lastActivity) >= kIdleAdvanceMs &&
+               lv_display_get_inactive_time(nullptr) >= kIdleAdvanceMs) {
+      // Second condition: a finger dragging the list counts as activity
+      // too, so touch-scrolling is never yanked away mid-gesture.
       Serial.println("[DeviceInfo] idle timeout — advancing");
       break;
     }
@@ -210,12 +238,13 @@ void showAboutScreen() {
   lv_obj_t *scr = makeBlankScreen();
   lv_obj_t *label = lv_label_create(scr);
   String text = String("About\n\n") + kIconAttribution +
-                "\n\nPress any button, or wait " + String(kIdleAdvanceMs / 1000) + "s";
+                "\n\nTap OK, press any button, or wait " + String(kIdleAdvanceMs / 1000) + "s";
   lv_label_set_text(label, text.c_str());
   lv_obj_set_width(label, 300);
   lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
   lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_align(label, LV_ALIGN_CENTER, 0, -18);
+  addTouchButton(scr, "OK", InputEvent::EncoderPressShort, LV_ALIGN_BOTTOM_MID, 0, -6);
 
   Serial.println("[About] " + String(kIconAttribution));
 
@@ -332,17 +361,18 @@ void showStatusScreen(const String &wifiLine, const String &mqttLine, bool wifiC
   lv_obj_set_style_text_font(icon, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(
       icon, lv_palette_main(wifiConnected ? LV_PALETTE_GREEN : LV_PALETTE_RED), 0);
-  lv_obj_align(icon, LV_ALIGN_LEFT_MID, 26, 0);
+  lv_obj_align(icon, LV_ALIGN_LEFT_MID, 26, -20);
 
+  // Text up top, touch buttons along the bottom edge (the OK button replaces
+  // the old "press any button" line; physical inputs still work too).
   lv_obj_t *label = lv_label_create(scr);
-  // Online mode needs the bottom of the screen for the live knob/command
-  // lines, so it drops the spacer lines.
-  String text = online ? (wifiLine + "\n" + mqttLine + "\nPress any button to continue")
-                       : (wifiLine + "\n\n" + mqttLine + "\n\nPress any button to continue");
+  String text = online ? (wifiLine + "\n" + mqttLine) : (wifiLine + "\n\n" + mqttLine);
   lv_label_set_text(label, text.c_str());
   lv_obj_set_width(label, 224);
   lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-  lv_obj_align(label, online ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_RIGHT_MID, -8, online ? 6 : 0);
+  lv_obj_align(label, LV_ALIGN_TOP_RIGHT, -8, 6);
+
+  addTouchButton(scr, "OK", InputEvent::EncoderPressShort, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
 
   Serial.println("[Status] " + wifiLine);
   Serial.println("[Status] " + mqttLine);
@@ -358,7 +388,11 @@ void showStatusScreen(const String &wifiLine, const String &mqttLine, bool wifiC
   lv_obj_t *liveLabel = lv_label_create(scr);
   lv_obj_set_width(liveLabel, 224);
   lv_label_set_long_mode(liveLabel, LV_LABEL_LONG_DOT);
-  lv_obj_align(liveLabel, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
+  lv_obj_align(liveLabel, LV_ALIGN_BOTTOM_RIGHT, -8, -46);
+
+  // Touch stand-ins for the encoder: same events, same code path below.
+  addTouchButton(scr, LV_SYMBOL_MINUS, InputEvent::EncoderCCW, LV_ALIGN_BOTTOM_RIGHT, -152, -6);
+  addTouchButton(scr, LV_SYMBOL_PLUS, InputEvent::EncoderCW, LV_ALIGN_BOTTOM_RIGHT, -80, -6);
 
   String lastCmd = "-";
   auto refreshLive = [&]() {
@@ -372,8 +406,8 @@ void showStatusScreen(const String &wifiLine, const String &mqttLine, bool wifiC
                   ok ? "" : " — NOT sent, MQTT offline");
   };
 
-  Serial.println("[Online] publishing telemetry; turn the encoder or type '+'/'-' to change "
-                 "the knob, press any button to continue");
+  Serial.println("[Online] publishing telemetry; tap -/+, turn the encoder or type '+'/'-' "
+                 "to change the knob; tap OK or press any button to continue");
   refreshLive();
   publishKnob("initial");
   uint32_t lastPublish = millis();
@@ -430,6 +464,10 @@ void setup() {
 
   littleFsSmokeTest();
 
+  // docs/ARCHITECTURE.md §5.3 boot step: load /config/active.json, creating
+  // it from the burned-in default if missing or invalid.
+  configLoad();
+
   // Verifies this build's crypto against the spec's published test vectors
   // (PROVISIONING_PROTOCOL_V2.md §10) before anything depends on it.
   provisioningSelfTest();
@@ -474,6 +512,10 @@ void loop() {
     }
   }
 
+  // Fill active.json's mqtt block from provisioning (§5.1) — a no-op when
+  // nothing changed since the last boot.
+  configSyncMqtt(mqttCfg);
+
   // Credentials come from our own NVS copy, NOT from WiFi.SSID()/psk():
   // those report the currently associated AP, which on a fresh boot is
   // nothing at all (see provisioningLoadStoredWifi).
@@ -486,7 +528,7 @@ void loop() {
   WifiResult wifi =
       netConnectWifi(wifiCreds.ssid, wifiCreds.password, 15000, []() { displayTick(); });
   String wifiLine = wifi.connected
-                        ? ("Wi-Fi: " + wifiCreds.ssid + " — Connected (" + wifi.ip + ")")
+                        ? ("Wi-Fi: " + wifiCreds.ssid + " - Connected (" + wifi.ip + ")")
                         : ("Wi-Fi: Failed (" + wifi.errorReason + ")");
 
   String mqttLine;

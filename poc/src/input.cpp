@@ -60,6 +60,12 @@ struct ButtonState {
 ButtonState gButton;
 ButtonState gEncoderButton;
 
+// Touch-injected events. Small ring buffer: a quick double-tap on "+" must
+// count twice, which a single slot would drop.
+constexpr uint8_t kInjectCap = 8;
+InputEvent gInjected[kInjectCap];
+uint8_t gInjectHead = 0, gInjectTail = 0;
+
 // Returns Short/Long press event on release, None otherwise. Long-press
 // fires once, on crossing the threshold, without waiting for release —
 // matches "long press = Home" needing to feel immediate, not release-gated.
@@ -113,7 +119,20 @@ void inputInit() {
   attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_DT), onEncoderPinChange, CHANGE);
 }
 
+void inputInject(InputEvent ev) {
+  const uint8_t next = (gInjectTail + 1) % kInjectCap;
+  if (next == gInjectHead) return;  // full — drop rather than overwrite
+  gInjected[gInjectTail] = ev;
+  gInjectTail = next;
+}
+
 InputEvent inputPoll() {
+  if (gInjectHead != gInjectTail) {
+    const InputEvent ev = gInjected[gInjectHead];
+    gInjectHead = (gInjectHead + 1) % kInjectCap;
+    return ev;
+  }
+
   // Encoder rotation takes priority if a tick is pending — rotation and
   // button events aren't expected to matter in the same instant.
   noInterrupts();

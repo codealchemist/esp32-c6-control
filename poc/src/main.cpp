@@ -8,6 +8,7 @@
 // API; also requires LV_USE_QRCODE enabled in lv_conf.h (README.md).
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <lvgl.h>
@@ -34,10 +35,32 @@ namespace {
 // read provisioningIsProvisioned() by the time most of these screens are
 // showing, and half-applying the change mid-sequence would leave Wi-Fi and
 // NVS state disagreeing about whether this device is provisioned.
+// Net knob steps typed on serial ('+' / '-') and not yet consumed — stands in
+// for the encoder on boards that have none wired, so the telemetry path
+// (nodrige §0.6 item 6) is testable from a serial console alone.
+int gSerialKnobSteps = 0;
+
 void serialCommandPoll() {
   while (Serial.available() > 0) {
     const int c = Serial.read();
-    if (c == 'r' || c == 'R') {
+    if (c == '+') {
+      gSerialKnobSteps++;
+    } else if (c == '-') {
+      gSerialKnobSteps--;
+    } else if (c == 'w' || c == 'W') {
+      // What the board itself can see — the C6 is 2.4 GHz only, so this is
+      // the quickest way to tell "wrong SSID" from "network is 5 GHz-only"
+      // when provisioning reports "SSID not found".
+      Serial.println("[Serial] 'w' — scanning Wi-Fi (2.4 GHz)...");
+      if (WiFi.getMode() == WIFI_OFF) WiFi.mode(WIFI_STA);
+      const int n = WiFi.scanNetworks();
+      for (int i = 0; i < n; i++) {
+        Serial.printf("[Scan] %-32s ch %2d  %4d dBm\n", WiFi.SSID(i).c_str(), WiFi.channel(i),
+                      WiFi.RSSI(i));
+      }
+      Serial.printf("[Scan] %d network(s)\n", n < 0 ? 0 : n);
+      WiFi.scanDelete();
+    } else if (c == 'r' || c == 'R') {
       Serial.println("[Serial] 'r' — clearing provisioning state, restarting...");
       provisioningForceReset();
       Serial.flush();  // ESP.restart() does not drain the TX buffer for us.
@@ -275,7 +298,25 @@ void showConnectingScreen(const String &status) {
   displayTick();
 }
 
-void showStatusScreen(const String &wifiLine, const String &mqttLine, bool wifiConnected) {
+// Telemetry component this POC reports, per nodrige
+// docs/00-poc-implementation-guide.md §0.6 item 6.
+constexpr const char *kKnobComponentId = "test-knob";
+constexpr const char *kKnobEventType = "adjustment";
+constexpr uint32_t kTelemetryHeartbeatMs = 10000;
+
+// Knob value survives across loop() iterations, so a re-connect does not
+// make the Core see a spurious change back to the starting value.
+int gKnobValue = 42;
+
+// Shows the Wi-Fi/MQTT result and waits for any press (docs/POC.md §2 step 8).
+//
+// When `online` is set the MQTT client from netConnectMqttAndTestEcho() is
+// still live, and this screen is also the device's application loop for
+// nodrige §0.6 items 6–7: encoder turns (or '+'/'-' on serial) change the
+// knob and publish it immediately, a heartbeat republishes it every 10s, and
+// any message on the commands topic is shown on screen and logged.
+void showStatusScreen(const String &wifiLine, const String &mqttLine, bool wifiConnected,
+                      bool online = false) {
   lv_obj_t *scr = makeBlankScreen();
 
   // Icon in the same left slot the connecting spinner occupies, so the
@@ -294,19 +335,88 @@ void showStatusScreen(const String &wifiLine, const String &mqttLine, bool wifiC
   lv_obj_align(icon, LV_ALIGN_LEFT_MID, 26, 0);
 
   lv_obj_t *label = lv_label_create(scr);
-  String text = wifiLine + "\n\n" + mqttLine + "\n\nPress any button to continue";
+  // Online mode needs the bottom of the screen for the live knob/command
+  // lines, so it drops the spacer lines.
+  String text = online ? (wifiLine + "\n" + mqttLine + "\nPress any button to continue")
+                       : (wifiLine + "\n\n" + mqttLine + "\n\nPress any button to continue");
   lv_label_set_text(label, text.c_str());
   lv_obj_set_width(label, 224);
   lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-  lv_obj_align(label, LV_ALIGN_RIGHT_MID, -8, 0);
+  lv_obj_align(label, online ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_RIGHT_MID, -8, online ? 6 : 0);
 
   Serial.println("[Status] " + wifiLine);
   Serial.println("[Status] " + mqttLine);
 
-  // "Any button press" per docs/POC.md §2 step 7 — deliberately not
-  // filtered to one event type, unlike everywhere else in the real input
-  // scheme.
-  waitForInput(/*acceptAny=*/true);
+  if (!online) {
+    // "Any button press" per docs/POC.md §2 step 7 — deliberately not
+    // filtered to one event type, unlike everywhere else in the real input
+    // scheme.
+    waitForInput(/*acceptAny=*/true);
+    return;
+  }
+
+  lv_obj_t *liveLabel = lv_label_create(scr);
+  lv_obj_set_width(liveLabel, 224);
+  lv_label_set_long_mode(liveLabel, LV_LABEL_LONG_DOT);
+  lv_obj_align(liveLabel, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
+
+  String lastCmd = "-";
+  auto refreshLive = [&]() {
+    String live = "Knob: " + String(gKnobValue) + (netMqttIsConnected() ? "" : " (offline)") +
+                  "\nCmd: " + lastCmd;
+    lv_label_set_text(liveLabel, live.c_str());
+  };
+  auto publishKnob = [&](const char *why) {
+    const bool ok = netMqttPublishTelemetry(kKnobComponentId, kKnobEventType, gKnobValue);
+    Serial.printf("[Telemetry] %s=%d (%s)%s\n", kKnobComponentId, gKnobValue, why,
+                  ok ? "" : " — NOT sent, MQTT offline");
+  };
+
+  Serial.println("[Online] publishing telemetry; turn the encoder or type '+'/'-' to change "
+                 "the knob, press any button to continue");
+  refreshLive();
+  publishKnob("initial");
+  uint32_t lastPublish = millis();
+
+  while (true) {
+    displayTick();
+    serialCommandPoll();
+
+    int steps = gSerialKnobSteps;
+    gSerialKnobSteps = 0;
+    InputEvent ev = inputPoll();
+    if (ev == InputEvent::EncoderCW) {
+      steps++;
+    } else if (ev == InputEvent::EncoderCCW) {
+      steps--;
+    } else if (ev != InputEvent::None) {
+      break;  // any press dismisses
+    }
+
+    if (steps != 0) {
+      gKnobValue += steps;
+      publishKnob("changed");
+      lastPublish = millis();
+      refreshLive();
+    } else if (millis() - lastPublish >= kTelemetryHeartbeatMs) {
+      publishKnob("heartbeat");
+      lastPublish = millis();
+      refreshLive();
+    }
+
+    String cmd;
+    if (netMqttTakeCommand(cmd)) {
+      Serial.println("[Command] " + cmd);
+      JsonDocument doc;
+      if (deserializeJson(doc, cmd) == DeserializationError::Ok) {
+        lastCmd = String(doc["action"] | "?") + " " + doc["value"].as<String>();
+      } else {
+        lastCmd = cmd;
+      }
+      refreshLive();
+    }
+    delay(5);
+  }
 }
 
 } // namespace
@@ -380,11 +490,16 @@ void loop() {
                         : ("Wi-Fi: Failed (" + wifi.errorReason + ")");
 
   String mqttLine;
+  bool online = false;
   if (wifi.connected && mqttCfg.valid) {
     showConnectingScreen("Connecting to MQTT\n\n" + mqttCfg.brokerHost);
     MqttResult mqtt = netConnectMqttAndTestEcho(
         mqttCfg.brokerHost, mqttCfg.brokerPort, mqttCfg.useTls, mqttCfg.clientId,
         mqttCfg.username, mqttCfg.password, 15000, []() { displayTick(); });
+    if (mqtt.connected) {
+      online = netMqttStartDeviceTopics(mqttCfg.topicCommands, mqttCfg.topicMessages);
+      if (!online) Serial.println("[MQTT] no commands/messages topics in stored config");
+    }
     if (mqtt.connected && mqtt.echoOk) {
       mqttLine = "MQTT: Connected";
     } else if (mqtt.connected) {
@@ -396,6 +511,9 @@ void loop() {
     mqttLine = "MQTT: not attempted (Wi-Fi unavailable)";
   }
 
-  showStatusScreen(wifiLine, mqttLine, wifi.connected);
+  showStatusScreen(wifiLine, mqttLine, wifi.connected, online);
+  // The next pass reconnects from scratch; don't leave this client running
+  // alongside it.
+  netMqttStop();
   // loop() re-enters from the top — docs/POC.md §2 step 8
 }

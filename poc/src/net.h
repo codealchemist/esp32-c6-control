@@ -40,7 +40,7 @@ MqttResult netConnectMqttAndTestEcho(const String &host, uint16_t port, bool use
 
 struct DeviceTopics {
   String commands;        // subscribed: commands for this device
-  String messages;        // published: telemetry
+  String messages;        // published: task invocations (CoreEvents)
   String config;          // subscribed: config pushes (docs/ARCHITECTURE.md §5.3)
   String commandResults;  // published: results, incl. config apply outcomes
 };
@@ -50,16 +50,12 @@ struct DeviceTopics {
 // topics. Requires a prior successful netConnectMqttAndTestEcho().
 bool netMqttStartDeviceTopics(const DeviceTopics &topics);
 
-// Publishes {"componentId","eventType","value"} — the wire shape the Core's
-// Connectivity Broker normalizes into a CoreEvent — to the messages topic.
-bool netMqttPublishTelemetry(const char *componentId, const char *eventType, int value);
-
 // Pops the oldest message received on the commands topic (FIFO of 4; if it
 // overflows, the oldest are dropped).
 bool netMqttTakeCommand(String &payloadOut);
 
 // Publishes a JSON event (CoreEvent wire shape) to the messages topic —
-// telemetry and task invocations both travel this way (device -> Core).
+// task invocations travel this way (device -> Core).
 bool netMqttPublishEvent(const String &json, int qos = 1);
 
 // Returns true (once) with a complete config document received on the config

@@ -376,7 +376,13 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for icon in icons:
-        src = ensure_source_png(icon, style, size, color)
+        # Per-icon "size" overrides sourceExportSize — for small inline icons
+        # (e.g. the Volume page's 28px target icons) that would otherwise be
+        # scaled down from the big menu size at runtime and lose crispness.
+        icon_size = icon.get("size", size)
+        if not isinstance(icon_size, int) or icon_size <= 0:
+            fail(f"icon '{icon['id']}': \"size\" must be a positive integer")
+        src = ensure_source_png(icon, style, icon_size, color)
         convert_icon(converter, icon["id"], src)
 
     write_registry(icon_ids, welcome_icon, attribution)

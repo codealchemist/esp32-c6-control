@@ -16,3 +16,9 @@ void settingsSetDimAfterSec(uint32_t seconds);
 // Seconds of inactivity before the screen turns off; 0 = never.
 uint32_t settingsOffAfterSec();
 void settingsSetOffAfterSec(uint32_t seconds);
+
+// Volume page target.
+constexpr uint8_t kVolumeTargetPhone = 0;
+constexpr uint8_t kVolumeTargetComputer = 1;
+uint8_t settingsVolumeTarget();
+void settingsSetVolumeTarget(uint8_t target);

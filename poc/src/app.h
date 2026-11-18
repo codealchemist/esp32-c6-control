@@ -7,10 +7,13 @@
 // display, serial console and online traffic alive.
 
 // One iteration of background work: LVGL, serial commands, and — while
-// online — telemetry heartbeat, incoming commands and config pushes. Call
+// online — incoming commands and config pushes. Call
 // in every screen loop, as often as the loop runs.
 void appPump();
 
 // True if a task_result command for `requestId` has arrived since it was
 // sent; `resultJson` receives that command's JSON. Consumes it.
 bool appTakeTaskResult(const String &requestId, String &resultJson);
+
+// Host of the MQTT broker this boot connected to ("" if none).
+const String &appBrokerHost();

@@ -36,11 +36,11 @@
       }
     },
     {
-      "id": "phone-volume",
+      "id": "volume",
       "type": "action",
       "label": "Volume",
       "icon": "icon_volume",
-      "action": "phoneVolume"
+      "action": "volume"
     },
     {
       "id": "messages",
@@ -96,19 +96,6 @@
             },
             "qos": 1,
             "expectsResult": true
-          }
-        },
-        {
-          "id": "scene-movie",
-          "type": "task",
-          "label": "Movie",
-          "icon": "icon_movie",
-          "task": {
-            "payload": {
-              "taskId": "scene-movie",
-              "name": "movie"
-            },
-            "qos": 1
           }
         }
       ]

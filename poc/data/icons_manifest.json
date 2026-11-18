@@ -66,6 +66,20 @@
       "source": "bright-moon",
       "license": "free-attribution",
       "file": "data/icons_src/icons8/icon_high_night.png"
+    },
+    {
+      "id": "icon_phone",
+      "source": "smartphone",
+      "size": 28,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_phone.png"
+    },
+    {
+      "id": "icon_computer",
+      "source": "laptop",
+      "size": 28,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_computer.png"
     }
   ]
 }

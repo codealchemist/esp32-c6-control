@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <WiFi.h>
 
 #include <vector>
 
@@ -67,7 +68,7 @@ const char *nodeSymbol(JsonObjectConst n) {
   if (type == "switch") return LV_SYMBOL_POWER;
   if (type == "action") {
     const String a = n["action"] | "";
-    if (a == "phoneVolume") return LV_SYMBOL_VOLUME_MAX;
+    if (a == "volume" || a == "phoneVolume") return LV_SYMBOL_VOLUME_MAX;
     if (a == "screenDim") return LV_SYMBOL_EYE_CLOSE;
     if (a == "screenOff") return LV_SYMBOL_POWER;
     return LV_SYMBOL_SETTINGS;
@@ -448,24 +449,6 @@ int gPhoneStep = kPhoneSteps / 2; // the step last sent for it
 
 int stepFor(int volume) { return (volume * kPhoneSteps + 50) / 100; }
 
-struct VolumeUi {
-  lv_obj_t *value;
-};
-
-void onVolumeSlider(lv_event_t *e) {
-  auto *slider = static_cast<lv_obj_t *>(lv_event_get_target(e));
-  auto *ui = static_cast<VolumeUi *>(lv_event_get_user_data(e));
-  gPhoneVolume = lv_slider_get_value(slider);
-  lv_label_set_text(ui->value, String(gPhoneVolume).c_str());
-  const int step = stepFor(gPhoneVolume);
-  if (step != gPhoneStep) {
-    phoneHidVolumeSteps(step - gPhoneStep);
-    Serial.printf("[Volume] %d (step %d -> %d)%s\n", gPhoneVolume, gPhoneStep, step,
-                  phoneHidConnected() ? "" : " — phone not paired, not sent");
-    gPhoneStep = step;
-  }
-}
-
 void onPageBack(lv_event_t *) { inputInject(InputEvent::ButtonPressShort); }
 
 // Header for single-control pages (Volume, Screen dimming): a small back
@@ -513,43 +496,190 @@ lv_obj_t *makePageValue(lv_obj_t *scr, const String &text) {
   return v;
 }
 
-void phoneVolumeScreen(const String &label) {
-  lv_obj_t *scr = uiBlankScreen("phone-volume");
+// Volume page: one slider for either target, chosen with a small switch at
+// the top-right (off = phone, on = computer; remembered in settings), with
+// the current target's icon beside it.
+//   Phone    — BLE HID volume keys; relative, so the level is an estimate.
+//   Computer — the Core's "player-volume" task sets the computer's output
+//              volume (0-100, absolute) and reports the real level back.
+// While dragging for the computer, the latest level goes out at most every
+// kComputerSendMs (fire-and-forget); on release a final set asks for the real
+// level back.
 
-  makePageHeader(scr, String(LV_SYMBOL_VOLUME_MAX "  ") + label);
+constexpr uint32_t kComputerSendMs = 150;
+int gComputerVolume = -1;  // -1 = not known yet
 
-  static VolumeUi ui;
-  ui.value = makePageValue(scr, String(gPhoneVolume));
-  lv_obj_t *slider = makePageSlider(scr, 0, 100, gPhoneVolume);
-  lv_obj_add_event_cb(slider, onVolumeSlider, LV_EVENT_VALUE_CHANGED, &ui);
+struct VolumePage {
+  lv_obj_t *slider = nullptr, *value = nullptr, *hint = nullptr, *toggle = nullptr;
+  lv_obj_t *targetIcon = nullptr;
+  uint8_t target = 0;  // kVolumeTargetPhone / kVolumeTargetComputer
+  bool computerDirty = false, released = false, hintDirty = true;
+  uint32_t lastSent = 0;
+  String pendingReply;  // requestId of a computer get/set awaiting its level
+};
+VolumePage gVol;
 
-  lv_obj_t *hint = lv_label_create(scr);
-  lv_obj_set_style_text_color(hint, lv_palette_main(LV_PALETTE_GREY), 0);
-  lv_obj_set_width(hint, 320 - 16);
-  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_long_mode(hint, LV_LABEL_LONG_DOT);
-  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+String volumeText(int v) { return v < 0 ? String("-") : String(v); }
 
-  bool wasConnected = !phoneHidConnected();  // force the first refresh
+// Sends player-volume for the computer: level < 0 = just read it.
+void sendComputerVolume(int level, bool wantReply) {
+  JsonDocument node, spec, extra;
+  node["id"] = "computer-volume";
+  spec["payload"]["taskId"] = "player-volume";
+  spec["qos"] = wantReply ? 1 : 0;
+  spec["expectsResult"] = wantReply;
+  if (level >= 0) extra["level"] = level;
+  String requestId;
+  if (publishTask(node.as<JsonObjectConst>(), spec.as<JsonObjectConst>(), extra.as<JsonObjectConst>(),
+                  requestId) && wantReply) {
+    gVol.pendingReply = requestId;
+  }
+}
+
+void showVolumeTarget() {
+  const bool phone = gVol.target == kVolumeTargetPhone;
+  if (phone) lv_obj_remove_state(gVol.toggle, LV_STATE_CHECKED);
+  else lv_obj_add_state(gVol.toggle, LV_STATE_CHECKED);
+  if (const lv_image_dsc_t *img = iconImage(phone ? "icon_phone" : "icon_computer")) {
+    lv_image_set_src(gVol.targetIcon, img);
+    lv_obj_align_to(gVol.targetIcon, gVol.toggle, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+  }
+  const int v = phone ? gPhoneVolume : gComputerVolume;
+  lv_label_set_text(gVol.value, volumeText(v).c_str());
+  lv_slider_set_value(gVol.slider, v < 0 ? 50 : v, LV_ANIM_OFF);
+  lv_obj_add_flag(gVol.hint, LV_OBJ_FLAG_HIDDEN);
+}
+
+void onVolumeToggle(lv_event_t *e) {
+  auto *sw = static_cast<lv_obj_t *>(lv_event_get_target(e));
+  const uint8_t t = lv_obj_has_state(sw, LV_STATE_CHECKED) ? kVolumeTargetComputer
+                                                           : kVolumeTargetPhone;
+  if (t == gVol.target) return;
+  gVol.target = t;
+  settingsSetVolumeTarget(t);
+  gVol.hintDirty = true;
+  Serial.printf("[Volume] target: %s\n", t == kVolumeTargetPhone ? "phone" : "computer");
+  showVolumeTarget();
+  if (t == kVolumeTargetComputer) sendComputerVolume(-1, true);  // fetch the real level
+}
+
+void onVolumeSlider(lv_event_t *e) {
+  auto *slider = static_cast<lv_obj_t *>(lv_event_get_target(e));
+  const int v = lv_slider_get_value(slider);
+  lv_label_set_text(gVol.value, String(v).c_str());
+  if (gVol.target == kVolumeTargetComputer) {
+    gComputerVolume = v;
+    gVol.computerDirty = true;
+    return;
+  }
+  gPhoneVolume = v;
+  const int step = stepFor(gPhoneVolume);
+  if (step != gPhoneStep) {
+    phoneHidVolumeSteps(step - gPhoneStep);
+    Serial.printf("[Volume] phone %d (step %d -> %d)%s\n", gPhoneVolume, gPhoneStep, step,
+                  phoneHidConnected() ? "" : " — phone not paired, not sent");
+    gPhoneStep = step;
+  }
+}
+
+void onVolumeReleased(lv_event_t *) { gVol.released = true; }
+
+void showHint(const String &text) {
+  lv_label_set_text(gVol.hint, text.c_str());
+  lv_obj_remove_flag(gVol.hint, LV_OBJ_FLAG_HIDDEN);
+}
+
+void volumeScreen(const String &label) {
+  lv_obj_t *scr = uiBlankScreen("volume");
+  makePageHeader(scr, label);
+  gVol = {};
+  gVol.target = settingsVolumeTarget();
+
+  // Target switch top-right: off = phone, on = computer, icon beside it.
+  gVol.toggle = lv_switch_create(scr);
+  lv_obj_set_size(gVol.toggle, 50, 26);
+  lv_obj_align(gVol.toggle, LV_ALIGN_TOP_RIGHT, -10, 13);
+  lv_obj_set_ext_click_area(gVol.toggle, 10);
+  lv_obj_set_style_bg_color(gVol.toggle, lv_palette_main(LV_PALETTE_BLUE),
+                            LV_PART_INDICATOR | LV_STATE_CHECKED);
+  gVol.targetIcon = lv_image_create(scr);  // placed by showVolumeTarget()
+  lv_obj_add_event_cb(gVol.toggle, onVolumeToggle, LV_EVENT_VALUE_CHANGED, nullptr);
+
+  gVol.value = makePageValue(scr, "");
+  gVol.slider = makePageSlider(scr, 0, 100, 50);
+  lv_obj_add_event_cb(gVol.slider, onVolumeSlider, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_event_cb(gVol.slider, onVolumeReleased, LV_EVENT_RELEASED, nullptr);
+
+  gVol.hint = lv_label_create(scr);
+  lv_obj_set_style_text_color(gVol.hint, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_set_width(gVol.hint, 320 - 16);
+  lv_obj_set_style_text_align(gVol.hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(gVol.hint, LV_LABEL_LONG_DOT);
+  lv_obj_align(gVol.hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+
+  showVolumeTarget();
+  if (gVol.target == kVolumeTargetComputer) sendComputerVolume(-1, true);
+
   Serial.println("[Volume] drag the slider ('+'/'-' = encoder, 5 per turn); back or 'b' closes");
   uint32_t lastActivity = millis();
+  bool wasPaired = phoneHidConnected();
+  bool wasOnline = netMqttIsConnected();
   while (true) {
     appPump();
-    const bool connected = phoneHidConnected();
-    if (connected != wasConnected) {
-      wasConnected = connected;
-      // The slider stays live either way; unpaired, moves just aren't sent.
-      if (connected) {
-        lv_obj_add_flag(hint, LV_OBJ_FLAG_HIDDEN);
-      } else {
-        lv_obj_remove_flag(hint, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(hint, (String("Pair '") + phoneHidName() + "' on your phone").c_str());
+    const bool phone = gVol.target == kVolumeTargetPhone;
+
+    // Status line: why moves may not land.
+    const bool paired = phoneHidConnected(), online = netMqttIsConnected();
+    if (paired != wasPaired || online != wasOnline || gVol.hintDirty) {
+      wasPaired = paired;
+      wasOnline = online;
+      gVol.hintDirty = false;
+      if (phone && !paired) showHint(String("Pair '") + phoneHidName() + "' on your phone");
+      else if (!phone && !online) showHint("Offline - not sent");
+      else lv_obj_add_flag(gVol.hint, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Computer: confirm on release (one set that reports back); while still
+    // dragging, stream the latest level.
+    if (gVol.released) {
+      gVol.released = false;
+      if (!phone && gComputerVolume >= 0) {
+        gVol.computerDirty = false;
+        gVol.lastSent = millis();
+        sendComputerVolume(gComputerVolume, true);
       }
     }
+    if (!phone && gVol.computerDirty && millis() - gVol.lastSent >= kComputerSendMs) {
+      gVol.computerDirty = false;
+      gVol.lastSent = millis();
+      sendComputerVolume(gComputerVolume, false);
+    }
+    String reply;
+    if (!gVol.pendingReply.isEmpty() && appTakeTaskResult(gVol.pendingReply, reply)) {
+      gVol.pendingReply = "";
+      JsonDocument r;
+      deserializeJson(r, reply);
+      if (String(r["result"]["status"] | "") == "ok") {
+        gComputerVolume = r["result"]["level"] | gComputerVolume;
+        Serial.printf("[Volume] computer at %d%s\n", gComputerVolume,
+                      (r["result"]["muted"] | false) ? " (muted)" : "");
+        if (!phone && !lv_obj_has_state(gVol.slider, LV_STATE_PRESSED)) {
+          lv_slider_set_value(gVol.slider, gComputerVolume, LV_ANIM_OFF);
+          lv_label_set_text(gVol.value, volumeText(gComputerVolume).c_str());
+          if (r["result"]["muted"] | false) showHint("Computer is muted");
+          else lv_obj_add_flag(gVol.hint, LV_OBJ_FLAG_HIDDEN);
+        }
+      } else if (!phone) {
+        showHint(r["result"]["message"] | "Computer volume failed");
+      }
+    }
+
     const InputEvent ev = inputPoll();
     if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
-      lv_slider_set_value(slider, gPhoneVolume + (ev == InputEvent::EncoderCW ? 5 : -5), LV_ANIM_OFF);
-      lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, nullptr);
+      const int cur = lv_slider_get_value(gVol.slider);
+      lv_slider_set_value(gVol.slider, cur + (ev == InputEvent::EncoderCW ? 5 : -5), LV_ANIM_OFF);
+      lv_obj_send_event(gVol.slider, LV_EVENT_VALUE_CHANGED, nullptr);
+      gVol.released = true;  // a turn is a complete move
       lastActivity = millis();
     } else if (ev != InputEvent::None) {
       return;  // back button / BOOT / push
@@ -665,8 +795,8 @@ void timeoutScreen(const TimeoutSetting &t, const String &label) {
 void runAction(JsonObjectConst node) {
   const String action = node["action"] | "";
   Serial.println("[Menu] action " + action);
-  if (action == "phoneVolume") {
-    phoneVolumeScreen(node["label"] | "Volume");
+  if (action == "volume" || action == "phoneVolume") {
+    volumeScreen(node["label"] | "Volume");
   } else if (action == "screenDim") {
     timeoutScreen(kDimSetting, node["label"] | "Screen dimming");
   } else if (action == "screenOff") {
@@ -691,6 +821,142 @@ void runAction(JsonObjectConst node) {
   } else {
     notice("unknown-action", "Unknown action\n" + action, LV_SYMBOL_WARNING,
            lv_palette_main(LV_PALETTE_AMBER));
+  }
+}
+
+// --- Device details (home header tap) ------------------------------------------------
+//
+// Two cards under a back button: Connection (Wi-Fi, IP, signal, MQTT broker,
+// Core version — asked from the Core when the page opens) and Device (chip,
+// memory, uptime, battery, firmware build). Refreshed every second; back /
+// BOOT / any button closes, as does 30s without input.
+
+constexpr uint32_t kDetailsIdleMs = 30000;
+
+// Battery: BAT_ADC on GPIO0 through a 200K/100K divider (VBAT = ADC x 3,
+// Waveshare schematic). There is no battery-present signal: with no battery
+// the charger (ETA6098) holds its battery pin near 4.2V, which reads exactly
+// like a full one — so the top of the range is reported as "full or none".
+String batteryText() {
+  const uint32_t mv = analogReadMilliVolts(0) * 3;
+  const String v = String(mv / 1000.0f, 2) + " V";
+  if (mv < 2500) return "Battery: none";
+  if (mv >= 4150) return "Bat " + v + " full/none";
+  int pct = (int(mv) - 3300) * 100 / (4150 - 3300);
+  pct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+  return "Battery " + v + " " + String(pct) + "%";
+}
+
+String uptimeText() {
+  const uint32_t s = millis() / 1000;
+  const uint32_t d = s / 86400, h = s / 3600 % 24, m = s / 60 % 60;
+  if (d) return "Up " + String(d) + "d " + String(h) + "h " + String(m) + "m";
+  if (h) return "Up " + String(h) + "h " + String(m) + "m";
+  return "Up " + String(m) + "m " + String(s % 60) + "s";
+}
+
+struct InfoCard {
+  lv_obj_t *lines[6] = {};
+};
+
+InfoCard makeInfoCard(lv_obj_t *scr, int32_t x, const char *title, int nLines) {
+  lv_obj_t *card = lv_obj_create(scr);
+  lv_obj_remove_style_all(card);
+  lv_obj_set_pos(card, x, 52);
+  lv_obj_set_size(card, 151, 116);
+  lv_obj_set_style_radius(card, 10, 0);
+  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(card, lv_color_hex(0x1C1C1C), 0);
+  lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *t = lv_label_create(card);
+  lv_label_set_text(t, title);
+  lv_obj_set_style_text_font(t, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(t, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_set_pos(t, 8, 5);
+
+  InfoCard c;
+  for (int i = 0; i < nLines; i++) {
+    lv_obj_t *l = lv_label_create(card);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(l, 151 - 14);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(l, 8, 24 + i * 18);
+    c.lines[i] = l;
+  }
+  return c;
+}
+
+void setLine(lv_obj_t *l, const String &text, lv_color_t color = lv_color_white()) {
+  lv_label_set_text(l, text.c_str());
+  lv_obj_set_style_text_color(l, color, 0);
+}
+
+void deviceDetailsScreen() {
+  lv_obj_t *scr = uiBlankScreen("device-details");
+  makePageHeader(scr, "Device details");
+  InfoCard net = makeInfoCard(scr, 6, "Connection", 5);
+  InfoCard dev = makeInfoCard(scr, 163, "Device", 5);
+
+  // Static lines.
+  setLine(dev.lines[0], String(ESP.getChipModel()) + " " + ESP.getCpuFreqMHz() + " MHz");
+  setLine(dev.lines[4], String("FW ") + __DATE__);
+
+  // Ask the Core who it is.
+  String coreText = netMqttIsConnected() ? "Core: asking..." : "Core: offline";
+  String coreRequest;
+  uint32_t coreAskedAt = millis();
+  if (netMqttIsConnected()) {
+    JsonDocument node, spec;
+    node["id"] = "core-info";
+    spec["payload"]["taskId"] = "core-info";
+    spec["qos"] = 1;
+    spec["expectsResult"] = true;
+    publishTask(node.as<JsonObjectConst>(), spec.as<JsonObjectConst>(), JsonObjectConst(), coreRequest);
+  }
+
+  Serial.println("[Details] device details; back or 'b' closes");
+  uint32_t lastRefresh = 0;
+  while (true) {
+    appPump();
+
+    String reply;
+    if (!coreRequest.isEmpty() && appTakeTaskResult(coreRequest, reply)) {
+      coreRequest = "";
+      JsonDocument r;
+      deserializeJson(r, reply);
+      coreText = String("Core v") + (r["result"]["version"] | "?");
+      lastRefresh = 0;
+      Serial.printf("[Details] %s | %s | %s | %s\n", coreText.c_str(),
+                    batteryText().c_str(), uptimeText().c_str(),
+                    (String(ESP.getChipModel()) + " " + ESP.getCpuFreqMHz() + " MHz").c_str());
+    } else if (!coreRequest.isEmpty() && millis() - coreAskedAt > kResultTimeoutMs) {
+      coreRequest = "";
+      coreText = "Core: no reply";
+      lastRefresh = 0;
+    }
+
+    if (lastRefresh == 0 || millis() - lastRefresh >= 1000) {
+      lastRefresh = millis();
+      const bool wifi = WiFi.status() == WL_CONNECTED;
+      const bool mqtt = netMqttIsConnected();
+      const lv_color_t ok = lv_palette_main(LV_PALETTE_GREEN), bad = lv_palette_main(LV_PALETTE_RED);
+      setLine(net.lines[0], wifi ? WiFi.SSID() : String("Wi-Fi: off"), wifi ? lv_color_white() : bad);
+      setLine(net.lines[1], wifi ? WiFi.localIP().toString() : String("-"));
+      setLine(net.lines[2], wifi ? "Signal " + String(WiFi.RSSI()) + " dBm" : String("-"));
+      setLine(net.lines[3], "MQTT " + (appBrokerHost().isEmpty() ? String("-") : appBrokerHost()),
+              mqtt ? ok : bad);
+      setLine(net.lines[4], coreText, mqtt ? lv_color_white() : bad);
+
+      setLine(dev.lines[1], String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB, " +
+                                String(ESP.getFreeHeap() / 1024) + " KB free");
+      setLine(dev.lines[2], uptimeText());
+      setLine(dev.lines[3], batteryText());
+    }
+
+    if (inputPoll() != InputEvent::None) return;  // back button / BOOT
+    if (lv_display_get_inactive_time(nullptr) >= kDetailsIdleMs) return;
+    delay(5);
   }
 }
 
@@ -888,8 +1154,7 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
 }
 
 // Shows one level until the user backs out. The root level never returns.
-void showLevel(JsonArrayConst nodes, const String &title, bool root,
-               const std::function<String()> &statusText) {
+void showLevel(JsonArrayConst nodes, const String &title, bool root) {
   const size_t n = nodes.size();
   if (n == 0 && !root) {
     notice("menu-empty", title + "\n(empty)", LV_SYMBOL_DIRECTORY, lv_color_white());
@@ -976,11 +1241,7 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root,
         selected = -1;
         break;
       case InputEvent::SecondaryAction:
-        if (root && statusText) {
-          notice("status", connectionText() + "\n" + statusText(),
-                 netMqttIsConnected() ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING,
-                 lv_palette_main(netMqttIsConnected() ? LV_PALETTE_GREEN : LV_PALETTE_RED));
-        }
+        if (root) deviceDetailsScreen();
         break;
       default:
         break;
@@ -1003,7 +1264,7 @@ void openNode(JsonObjectConst node, const String &path) {
       notice("inbox", label + "\nNo messages\n(inbox not built yet)", LV_SYMBOL_ENVELOPE,
              lv_color_white());
     } else {
-      showLevel(node["children"].as<JsonArrayConst>(), label, false, nullptr);
+      showLevel(node["children"].as<JsonArrayConst>(), label, false);
     }
   }
 }
@@ -1022,13 +1283,13 @@ void menuSetActiveScenes(JsonArrayConst names) {
   Serial.printf("[Scenes] active: %u\n", (unsigned)gActiveScenes.size());
 }
 
-void menuHome(std::function<String()> statusText) {
+void menuHome() {
   Serial.println("[Menu] home: tap an item to open, swipe left/right to page, swipe down or "
                  "tap the header to go back; encoder +/- selects, 's' opens, 'b' back, "
                  "'a' shows status");
   displaySetAutoDim(settingsDimAfterSec());
   displaySetAutoOff(settingsOffAfterSec());
-  showLevel(configMenu(), "Menu", true, statusText);
+  showLevel(configMenu(), "Menu", true);
 }
 
 bool uiEditInt(const String &title, int &value, int minValue, int maxValue, int step,

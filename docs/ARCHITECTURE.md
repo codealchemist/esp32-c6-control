@@ -317,10 +317,13 @@ provisioned to NVS separately, never stored in the JSON config alongside
   `active.json`, §5.3 point 4), and `"showAbout"` (a static text screen —
   reuses `MessageScreen`'s rendering, not a new screen type — showing the
   Icons8 attribution required by the free license tier, §12.1), and
-  `"phoneVolume"` (a slider that sends volume up/down key presses to the
-  user's phone, paired to the panel as a Bluetooth LE HID media remote —
-  the C6 has no Bluetooth Classic, so HID over GATT rather than AVRCP; the
-  phone never reports its level, so the slider is an estimate), and
+  `"volume"` (a slider with a Phone | Computer toggle: for the phone it sends
+  volume up/down key presses to the user's phone, paired to the panel as a
+  Bluetooth LE HID media remote — the C6 has no Bluetooth Classic, so HID over
+  GATT rather than AVRCP, and the phone never reports its level, so that
+  value is an estimate; for the computer it sends the Core's `player-volume`
+  task, which sets and reports the real 0-100 output level of the machine
+  the Core runs on. `"phoneVolume"` is accepted as an older name), and
   `"screenDim"` (how long without input before the backlight dims — Never,
   10 s … 10 min, default 30 s; an on-device setting kept in NVS, not in the
   config; the touch that wakes a dimmed screen does nothing else), and
@@ -951,6 +954,9 @@ it.
    doing with it" without re-deriving it from memory.
 3. Build. The PNG is downloaded to `data/icons_src/icons8/<icon_id>.png`
    at `sourceExportSize`, converted, and registered automatically.
+
+An icon entry may set its own `"size"` (e.g. 28 for the Volume page's small
+phone/computer icons); otherwise `sourceExportSize` applies.
 
 `sourceExportSize` is both the download size **and** the final rendered
 size — LVGLImage.py does not resize, so the source PNG's dimensions are

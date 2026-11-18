@@ -16,6 +16,8 @@ extern const lv_image_dsc_t icon_scenes;
 extern const lv_image_dsc_t icon_night;
 extern const lv_image_dsc_t icon_day;
 extern const lv_image_dsc_t icon_high_night;
+extern const lv_image_dsc_t icon_phone;
+extern const lv_image_dsc_t icon_computer;
 
 struct IconRegistryEntry { const char *id; const lv_image_dsc_t *img; };
 static const IconRegistryEntry kIconRegistry[] = {
@@ -26,8 +28,10 @@ static const IconRegistryEntry kIconRegistry[] = {
     {"icon_night", &icon_night},
     {"icon_day", &icon_day},
     {"icon_high_night", &icon_high_night},
+    {"icon_phone", &icon_phone},
+    {"icon_computer", &icon_computer},
 };
-static const size_t kIconRegistryCount = 7;
+static const size_t kIconRegistryCount = 9;
 
 // Selected by icons_manifest.json's "welcomeIcon".
 static const lv_image_dsc_t *const kWelcomeIcon = &icon_google;

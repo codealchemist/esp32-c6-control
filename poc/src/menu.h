@@ -9,9 +9,8 @@
 // The config-driven menu (docs/ARCHITECTURE.md §5.2, §6): renders the active
 // config's node tree, two items per page, runs tasks (publishing them to the
 // Core) and local actions. This is the home screen while online: it never
-// returns. `statusText` supplies the details shown when the connection
-// header is tapped.
-void menuHome(std::function<String()> statusText);
+// returns. Tapping its connection header opens the device details page.
+void menuHome();
 
 // Generic int edit (§5.2.1 `int`): -/+ change a pending value shown on
 // screen; tap the value area (or encoder push) sets it, BOOT or 5s idle

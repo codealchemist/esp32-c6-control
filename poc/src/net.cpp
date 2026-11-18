@@ -329,15 +329,6 @@ bool netMqttStartDeviceTopics(const DeviceTopics &t) {
   return true;
 }
 
-bool netMqttPublishTelemetry(const char *componentId, const char *eventType, int value) {
-  if (!gClient || !gMqttConnected || gMessagesTopic.length() == 0) return false;
-  char payload[160];
-  snprintf(payload, sizeof(payload),
-           "{\"componentId\":\"%s\",\"eventType\":\"%s\",\"value\":%d}", componentId, eventType,
-           value);
-  return esp_mqtt_client_publish(gClient, gMessagesTopic.c_str(), payload, 0, 1, false) >= 0;
-}
-
 bool netMqttTakeCommand(String &payloadOut) {
   if (gCmdCount == 0) return false;
   char local[kMaxCommandLen + 1];

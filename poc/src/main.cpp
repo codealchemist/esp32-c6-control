@@ -72,6 +72,7 @@ void serialCommandPoll() {
     //   b      BOOT (back)       a  home: connection details
     //   v / V  drag the volume slider right / left (simulated touch)
     //   h / H  swipe left / right (simulated touch)
+    //   C      tap the Volume page's phone/computer switch (simulated touch)
     if (c == '+') {
       inputInject(InputEvent::EncoderCW);
     } else if (c == '-') {
@@ -90,6 +91,8 @@ void serialCommandPoll() {
       displaySimulateDrag(260, 100, 60, 100, 200);  // swipe left (next page)
     } else if (c == 'H') {
       displaySimulateDrag(60, 100, 260, 100, 200);  // swipe right (previous / back)
+    } else if (c == 'C') {
+      displaySimulateDrag(285, 26, 285, 26, 60);  // tap: Volume page target switch
     } else if (c == 't' || c == 'T') {
       touchSetDebug(!touchDebugEnabled());
     } else if (c == 'w' || c == 'W') {
@@ -317,19 +320,11 @@ void showConnectingScreen(const String &status) {
 //
 // Everything the device does while connected, independent of which screen is
 // showing (nodrige docs/00-poc-implementation-guide.md §0.6 items 6–7, and
-// docs/ARCHITECTURE.md §5.3 point 3): telemetry heartbeat, incoming commands,
+// docs/ARCHITECTURE.md §5.3 point 3): incoming commands
 // and config pushes. Called from every online screen's loop.
 
-// Telemetry component this POC reports.
-constexpr const char *kKnobComponentId = "test-knob";
-constexpr const char *kKnobEventType = "adjustment";
-constexpr uint32_t kTelemetryHeartbeatMs = 10000;
-
-// Survives across loop() iterations, so a reconnect does not make the Core
-// see a spurious change back to the starting value.
-int gKnobValue = 42;
-String gLastCmd = "-";
-uint32_t gLastPublish = 0;
+// MQTT broker this boot connected to, for the device details page.
+String gBrokerHost;
 
 // Set while the MQTT client is up with device topics subscribed; gates the
 // online part of appPump().
@@ -344,38 +339,20 @@ struct TaskResult {
 TaskResult gTaskResults[4];
 size_t gTaskResultNext = 0;
 
-void publishKnob(const char *why) {
-  const bool ok = netMqttPublishTelemetry(kKnobComponentId, kKnobEventType, gKnobValue);
-  Serial.printf("[Telemetry] %s=%d (%s)%s\n", kKnobComponentId, gKnobValue, why,
-                ok ? "" : " — NOT sent, MQTT offline");
-  gLastPublish = millis();
-}
 
-
-// Returns true when something visible changed (caller refreshes its labels).
-bool onlineService() {
-  bool changed = false;
-
-  if (millis() - gLastPublish >= kTelemetryHeartbeatMs) {
-    publishKnob("heartbeat");
-  }
-
+void onlineService() {
   String cmd;
   if (netMqttTakeCommand(cmd)) {
     Serial.println("[Command] " + cmd);
     JsonDocument doc;
     if (deserializeJson(doc, cmd) != DeserializationError::Ok) {
-      gLastCmd = cmd;
-      changed = true;
+      Serial.println("[Command] not JSON - ignored");
     } else if (String(doc["action"] | "") == "scene_state") {
       menuSetActiveScenes(doc["active"].as<JsonArrayConst>());
     } else if (String(doc["action"] | "") == "task_result") {
       // A reply to a menu task (§6.3), matched by requestId by whoever waits.
       gTaskResults[gTaskResultNext] = {doc["correlationId"] | "", cmd};
       gTaskResultNext = (gTaskResultNext + 1) % 4;
-    } else {
-      gLastCmd = String(doc["action"] | "?") + " " + doc["value"].as<String>();
-      changed = true;
     }
   }
 
@@ -394,17 +371,13 @@ bool onlineService() {
       pumpFor(1500);
       Serial.flush();
       ESP.restart();
-    } else if (r == PushResult::Rejected) {
-      gLastCmd = "config rejected";
-      changed = true;
     }
   }
-  return changed;
 }
 
 // Shows the Wi-Fi/MQTT result (docs/POC.md §2 step 8). Offline: the result
 // with OK (retry from the top). Online: the config menu is the home screen
-// and stays up; its connection header shows this summary when tapped.
+// and stays up; its connection header opens the device details page.
 void showStatusScreen(const String &summary, bool wifiConnected, bool online = false) {
   const char *symbol = wifiConnected ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING;
   const lv_color_t color = lv_palette_main(wifiConnected ? LV_PALETTE_GREEN : LV_PALETTE_RED);
@@ -417,13 +390,12 @@ void showStatusScreen(const String &summary, bool wifiConnected, bool online = f
   }
 
   gOnline = true;
-  publishKnob("initial");
   // The phone remote (Volume menu item). BLE comes up only now: provisioning
   // owns it before this, and starting it once per boot is enough.
   static String hidName = "Panel-" + WiFi.macAddress().substring(12, 14) +
                           WiFi.macAddress().substring(15, 17);
   phoneHidBegin(hidName.c_str());
-  menuHome([summary]() { return summary + "\nCore: " + gLastCmd; });
+  menuHome();
   gOnline = false;
 }
 
@@ -435,6 +407,8 @@ void appPump() {
   serialCommandPoll();
   if (gOnline) onlineService();
 }
+
+const String &appBrokerHost() { return gBrokerHost; }
 
 bool appTakeTaskResult(const String &requestId, String &resultJson) {
   for (TaskResult &r : gTaskResults) {
@@ -533,6 +507,7 @@ void loop() {
   bool online = false;
   if (wifi.connected && mqttCfg.valid) {
     showConnectingScreen("Connecting to MQTT\n\n" + mqttCfg.brokerHost);
+    gBrokerHost = mqttCfg.brokerHost;
     MqttResult mqtt = netConnectMqttAndTestEcho(
         mqttCfg.brokerHost, mqttCfg.brokerPort, mqttCfg.useTls, mqttCfg.clientId,
         mqttCfg.username, mqttCfg.password, 15000, []() { displayTick(); });

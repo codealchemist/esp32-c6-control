@@ -6,6 +6,7 @@ namespace {
 constexpr const char *kNamespace = "settings";
 constexpr const char *kDimKey = "dimSec";
 constexpr const char *kOffKey = "offSec";
+constexpr const char *kVolTargetKey = "volTarget";
 
 uint32_t getU(const char *key, uint32_t def) {
   Preferences p;
@@ -27,3 +28,5 @@ uint32_t settingsDimAfterSec() { return getU(kDimKey, kDefaultDimAfterSec); }
 void settingsSetDimAfterSec(uint32_t seconds) { putU(kDimKey, seconds); }
 uint32_t settingsOffAfterSec() { return getU(kOffKey, kDefaultOffAfterSec); }
 void settingsSetOffAfterSec(uint32_t seconds) { putU(kOffKey, seconds); }
+uint8_t settingsVolumeTarget() { return getU(kVolTargetKey, kVolumeTargetPhone) == kVolumeTargetComputer ? kVolumeTargetComputer : kVolumeTargetPhone; }
+void settingsSetVolumeTarget(uint8_t target) { putU(kVolTargetKey, target); }

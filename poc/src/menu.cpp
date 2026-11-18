@@ -597,6 +597,9 @@ lv_obj_t *makePageValue(lv_obj_t *scr, const String &text) {
   return v;
 }
 
+void onGesture(lv_event_t *);  // swipes -> input events (Navigation, below)
+bool takeSwipe();              // true if the last turn/press came from a swipe
+
 // Volume page: one slider for either target, chosen with a small switch at
 // the top-right (off = phone, on = computer; remembered in settings), with
 // the current target's icon beside it.
@@ -692,6 +695,8 @@ void showHint(const String &text) {
 
 void volumeScreen(const String &label) {
   lv_obj_t *scr = uiBlankScreen("volume");
+  lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);  // swipe right = back
+  takeSwipe();
   makePageHeader(scr, label);
   gVol = {};
   gVol.target = settingsVolumeTarget();
@@ -780,7 +785,9 @@ void volumeScreen(const String &label) {
     }
 
     const InputEvent ev = inputPoll();
-    if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
+    if ((ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) && takeSwipe()) {
+      if (ev == InputEvent::EncoderCCW) return;  // swipe right (outside the slider): back
+    } else if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
       const int cur = lv_slider_get_value(gVol.slider);
       lv_slider_set_value(gVol.slider, cur + (ev == InputEvent::EncoderCW ? 5 : -5), LV_ANIM_OFF);
       lv_obj_send_event(gVol.slider, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -868,6 +875,8 @@ void onTimeoutSlider(lv_event_t *e) {
 
 void timeoutScreen(const TimeoutSetting &t, const String &label) {
   lv_obj_t *scr = uiBlankScreen("timeout-setting");
+  lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);  // swipe right = back
+  takeSwipe();
   makePageHeader(scr, String(t.symbol) + "  " + label);
   const uint32_t current = t.get();
   static TimeoutUi ui;
@@ -886,7 +895,12 @@ void timeoutScreen(const TimeoutSetting &t, const String &label) {
   while (true) {
     appPump();
     const InputEvent ev = inputPoll();
-    if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
+    if ((ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) && takeSwipe()) {
+      if (ev == InputEvent::EncoderCCW) {  // swipe right (outside the slider): back
+        Serial.printf("[Settings] %s: %s\n", t.logName, timeoutText(t.get()).c_str());
+        return;
+      }
+    } else if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
       const int idx = lv_slider_get_value(slider) + (ev == InputEvent::EncoderCW ? 1 : -1);
       lv_slider_set_value(slider, idx, LV_ANIM_OFF);
       lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -944,14 +958,14 @@ void runAction(JsonObjectConst node) {
 // Full pages like the menu's: Connection (Wi-Fi, IP, signal, MQTT broker,
 // Core version — asked from the Core when the page opens) and Device (chip,
 // memory, uptime, battery, firmware build). Swipe left/right (or turn the
-// encoder) to switch pages; back button, BOOT or swipe down closes; so does
+// encoder) to switch pages; back button, BOOT, swipe down, or swipe right on
+// the first page closes; so does
 // 30s without input. Values refresh every second.
 
 constexpr uint32_t kDetailsIdleMs = 30000;
 constexpr int kDetailsPages = 2;
 constexpr int kDetailRows = 5;
 
-void onGesture(lv_event_t *);  // the menu's swipe handler (Navigation, below)
 
 // Battery: BAT_ADC on GPIO0 through a 200K/100K divider (VBAT = ADC x 3,
 // Waveshare schematic). There is no battery-present signal: with no battery
@@ -984,7 +998,7 @@ DetailsPage drawDetailsPage(int page, lv_screen_load_anim_t anim) {
   static const char *kTitles[kDetailsPages] = {"Connection", "Device"};
   static const char *kLabels[kDetailsPages][kDetailRows] = {
       {"Wi-Fi", "IP", "Signal", "MQTT", "Core"},
-      {"Chip", "Memory", "Uptime", "Battery", "Firmware"}};
+      {"Chip", "Free RAM", "Uptime", "Battery", "Firmware"}};
 
   lv_obj_t *scr = uiBlankScreen("device-details", anim);
   lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);
@@ -1018,7 +1032,11 @@ DetailsPage drawDetailsPage(int page, lv_screen_load_anim_t anim) {
   for (int i = 0; i < kDetailRows; i++) {
     lv_obj_t *v = lv_label_create(scr);
     lv_obj_set_width(v, 320 - valueX - 10);
-    lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
+    // Values that don't fit (a long Wi-Fi name, a broker hostname) scroll
+    // slowly round; ones that fit stay still.
+    lv_label_set_long_mode(v, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    // For scrolling labels anim_duration is a speed: 25 px/s, 1-20 s per pass.
+    lv_obj_set_style_anim_duration(v, lv_anim_speed_clamped(25, 1000, 20000), 0);
     lv_obj_set_pos(v, valueX, 54 + i * 23);
     p.values[i] = v;
   }
@@ -1026,7 +1044,8 @@ DetailsPage drawDetailsPage(int page, lv_screen_load_anim_t anim) {
 }
 
 void setValue(lv_obj_t *l, const String &text, lv_color_t color = lv_color_white()) {
-  lv_label_set_text(l, text.c_str());
+  // Re-setting the same text would restart a scrolling label every refresh.
+  if (text != lv_label_get_text(l)) lv_label_set_text(l, text.c_str());
   lv_obj_set_style_text_color(l, color, 0);
 }
 
@@ -1042,9 +1061,9 @@ void fillDetailsPage(int page, const DetailsPage &p, const String &coreText) {
              mqtt ? lv_palette_main(LV_PALETTE_GREEN) : bad);
     setValue(p.values[4], coreText, mqtt ? white : bad);
   } else {
-    setValue(p.values[0], String(ESP.getChipModel()) + ", " + ESP.getCpuFreqMHz() + " MHz");
-    setValue(p.values[1], String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB, " +
-                              String(ESP.getFreeHeap() / 1024) + " KB free");
+    setValue(p.values[0], String(ESP.getChipModel()) + ", " +
+                              String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB");
+    setValue(p.values[1], String(ESP.getFreeHeap() / 1024) + " KB free");
     setValue(p.values[2], uptimeText());
     setValue(p.values[3], batteryText());
     setValue(p.values[4], __DATE__);
@@ -1054,6 +1073,7 @@ void fillDetailsPage(int page, const DetailsPage &p, const String &coreText) {
 void deviceDetailsScreen() {
   int page = 0;
   DetailsPage p = drawDetailsPage(page, LV_SCREEN_LOAD_ANIM_NONE);
+  takeSwipe();
 
   // Ask the Core who it is.
   String coreText = netMqttIsConnected() ? "asking..." : "offline";
@@ -1096,6 +1116,7 @@ void deviceDetailsScreen() {
     const InputEvent ev = inputPoll();
     if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
       const bool fwd = ev == InputEvent::EncoderCW;
+      if (takeSwipe() && !fwd && page == 0) return;  // swipe right on the first page: back
       page = (page + (fwd ? 1 : kDetailsPages - 1)) % kDetailsPages;
       p = drawDetailsPage(page, fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT);
       lastRefresh = 0;
@@ -1132,6 +1153,14 @@ int gTappedCell = -1;
 bool gGestured = false;
 
 void onCellPressed(lv_event_t *) { gGestured = false; }
+
+// Swipes arrive as encoder turns (left = CW, right = CCW). Pages that treat
+// a swipe differently from a real knob turn ask here; it also clears the flag.
+bool takeSwipe() {
+  const bool was = gGestured;
+  gGestured = false;
+  return was;
+}
 
 void onCellClicked(lv_event_t *e) {
   if (gGestured) return;

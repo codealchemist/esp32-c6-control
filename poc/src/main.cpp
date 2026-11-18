@@ -88,9 +88,9 @@ void serialCommandPoll() {
     } else if (c == 'V') {
       displaySimulateDrag(260, 129, 60, 129, 700);  // volume slider, right -> left
     } else if (c == 'h') {
-      displaySimulateDrag(260, 100, 60, 100, 200);  // swipe left (next page)
+      displaySimulateDrag(260, 70, 60, 70, 200);  // swipe left (next page)
     } else if (c == 'H') {
-      displaySimulateDrag(60, 100, 260, 100, 200);  // swipe right (previous / back)
+      displaySimulateDrag(60, 70, 260, 70, 200);  // swipe right (previous / back)
     } else if (c == 'C') {
       displaySimulateDrag(285, 26, 285, 26, 60);  // tap: Volume page target switch
     } else if (c == 't' || c == 'T') {

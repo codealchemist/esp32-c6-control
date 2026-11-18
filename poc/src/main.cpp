@@ -73,6 +73,7 @@ void serialCommandPoll() {
     //   v / V  drag the volume slider right / left (simulated touch)
     //   h / H  swipe left / right (simulated touch)
     //   C      tap the Volume page's phone/computer switch (simulated touch)
+    //   k      the shortcut button    p  print input pin levels
     if (c == '+') {
       inputInject(InputEvent::EncoderCW);
     } else if (c == '-') {
@@ -91,6 +92,10 @@ void serialCommandPoll() {
       displaySimulateDrag(260, 70, 60, 70, 200);  // swipe left (next page)
     } else if (c == 'H') {
       displaySimulateDrag(60, 70, 260, 70, 200);  // swipe right (previous / back)
+    } else if (c == 'p' || c == 'P') {
+      inputPrintPins();
+    } else if (c == 'k' || c == 'K') {
+      inputInject(InputEvent::ShortcutPress);  // the shortcut button
     } else if (c == 'C') {
       displaySimulateDrag(285, 26, 285, 26, 60);  // tap: Volume page target switch
     } else if (c == 't' || c == 'T') {

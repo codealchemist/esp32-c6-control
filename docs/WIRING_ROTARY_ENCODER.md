@@ -130,3 +130,30 @@ lines.
 | One click moves two steps, or steps are skipped | Contact bounce on that unit. Tune the debounce values in `poc/src/input_timing.h` |
 | The knob press does nothing | `SW` on the wrong pin, or the module's switch is faulty: check with a multimeter that SW goes to GND when pressed |
 | Board won't boot with the encoder attached | Unplug the encoder and check that no wire touches pin `8` or `9` (boot-mode pins), and that `+` and `GND` aren't swapped |
+
+## Shortcut button (optional)
+
+A momentary push button that runs one menu item of your choice: the Lights
+switch (toggles it), or a scene (first press runs it, the next turns the
+lights off). Pick the item in **Settings → Shortcut button** on the panel; the
+list only shows items the config marks as shortcut-able.
+
+| Button leg | Goes to board pin | ESP32-C6 GPIO |
+|---|---|---|
+| one leg | `17` (left row, labelled **RXD**) | GPIO17 |
+| other leg | `GND` | n/a |
+
+- **No resistor needed:** the firmware turns on GPIO17's internal pull-up, and
+  a press pulls the pin to GND.
+- **Why pin 17:** it's UART0's receive pin, which is idle because the firmware
+  uses USB for its serial console.
+- **When it works:** from any menu page, and even when the screen is dimmed or
+  off (it wakes the screen *and* runs). Settings pages, Volume and Device
+  details close first, then it runs.
+- **Feedback:**
+  - Tasks and switches run in place, with a small pill at the bottom of the
+    screen: a spinner, then ✓ or ✗.
+  - Local actions and folders just open.
+- **Checking the wiring:** with the board on USB, send `p` in a serial
+  monitor. It prints `shortcut(17)=1` normally and `=0` while the button is
+  held. Every press also logs `[Input] shortcut button pressed (GPIO17)`.

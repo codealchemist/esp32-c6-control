@@ -129,6 +129,27 @@ struct Validator {
     const char *icon = n["icon"] | static_cast<const char *>(nullptr);
     if (icon && !iconKnown(icon)) warn(where, String("icon '") + icon + "' has no artwork yet");
 
+    // "shortcut": lets the shortcut button run this item. Remote actions only
+    // (a button press has no way to pick a value): `true` on a switch (the
+    // button toggles it) or a task (each press runs it), or on a task
+    // { "off": {...} } — then presses alternate: run, then run with "off"
+    // merged into the payload (e.g. a scene, then "Turn Off").
+    JsonVariantConst sc = n["shortcut"];
+    if (!sc.isNull()) {
+      if (type != "task" && type != "switch") {
+        error(where, "shortcut is only for task and switch items");
+      } else if (sc.is<bool>()) {
+        // fine
+      } else if (type == "task" && sc.is<JsonObjectConst>()) {
+        if (!sc["off"].isNull() && !sc["off"].is<JsonObjectConst>()) {
+          error(where, "shortcut.off must be an object");
+        }
+      } else {
+        error(where, type == "switch" ? "shortcut on a switch must be true or false"
+                                      : "shortcut must be true, false or { \"off\": {...} }");
+      }
+    }
+
     String detail;
     if (type == "task") {
       s.tasks++;
@@ -181,7 +202,8 @@ struct Validator {
       const String action = n["action"] | "";
       if (action != "reprovision" && action != "restoreDefaultConfig" && action != "showAbout" &&
           action != "volume" && action != "phoneVolume" && action != "screenDim" &&
-          action != "screenOff" && action != "switchSync") {
+          action != "screenOff" && action != "switchSync" &&
+          action != "shortcut") {
         error(where, "unknown action '" + action + "'");
       }
       detail = "action " + action;

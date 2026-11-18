@@ -52,3 +52,6 @@
 #define PIN_ENCODER_CLK 3  // KY-040 CLK -> header IO3
 #define PIN_ENCODER_DT 7   // KY-040 DT  -> header IO7
 #define PIN_ENCODER_SW 4   // KY-040 SW  -> header IO4
+// Shortcut button: a momentary push button between header pin 17 (RXD, UART0
+// is idle) and GND. Runs the menu action chosen in Settings > Shortcut button.
+#define PIN_SHORTCUT 17

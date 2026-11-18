@@ -276,6 +276,20 @@ provisioned to NVS separately, never stored in the JSON config alongside
   `switch` tiles are dimmed and a tap just shows the red cross (nothing is
   queued, §6.3); local actions, folders and the phone volume keep working.
   Everything lights up again on reconnect, with no reboot.
+- **Shortcut button (`"shortcut"` field).** Marks a task or switch as one
+  the physical shortcut button may run; other types are rejected, since a
+  press can't choose a value (Volume, for example, is not a fit).
+  - `"shortcut": true` on a switch: each press toggles it, like a tap.
+  - `"shortcut": true` on a task: each press runs it.
+  - `"shortcut": { "off": { "tuyaScene": "Turn Off" } }` on a task: presses
+    alternate. While the task's scene is active (as the panel knows it: its
+    last run, or the Core's `scene_state`, asked at boot and when a scenes
+    page opens) the press runs the task with `off` merged into the payload;
+    otherwise it runs the task normally.
+
+  The press works from any menu page and also on a dimmed or off screen
+  (it wakes it *and* runs); a pill at the bottom shows progress and the
+  result.
 - **Task feedback on the tile.** Every `task` runs from its menu tile: any
   adjustable params open their editor first, then the grid returns and a
   small spinner at the tile's top-right shows the reply is pending; it turns
@@ -336,7 +350,11 @@ provisioned to NVS separately, never stored in the JSON config alongside
   the Core runs on. `"phoneVolume"` is accepted as an older name), and
   `"screenDim"` (how long without input before the backlight dims — Never,
   10 s … 10 min, default 30 s; an on-device setting kept in NVS, not in the
-  config; the touch that wakes a dimmed screen does nothing else), and
+  config; the touch that wakes a dimmed screen does nothing else),
+  `"shortcut"` (picks the menu item the physical shortcut button runs, from
+  the items the config marks with a `shortcut` field — see below; kept in
+  NVS by node id, so it survives config pushes as long as that id stays in
+  the menu), and
   `"screenOff"` (same idea one step further: after Never / 30 s … 30 min,
   default 5 min, the backlight goes to 0 and the panel sleeps; any touch,
   button or encoder input turns it back on and is otherwise ignored).

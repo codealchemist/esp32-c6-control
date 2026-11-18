@@ -28,3 +28,7 @@ void settingsSetVolumeTarget(uint8_t target);
 constexpr uint32_t kDefaultSwitchSyncSec = 600;
 uint32_t settingsSwitchSyncSec();
 void settingsSetSwitchSyncSec(uint32_t seconds);
+
+// Shortcut button: id of the menu node it runs ("" = none).
+String settingsShortcut();
+void settingsSetShortcut(const String &nodeId);

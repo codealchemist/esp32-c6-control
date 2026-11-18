@@ -8,6 +8,7 @@ constexpr const char *kDimKey = "dimSec";
 constexpr const char *kOffKey = "offSec";
 constexpr const char *kVolTargetKey = "volTarget";
 constexpr const char *kSwitchSyncKey = "swSyncSec";
+constexpr const char *kShortcutKey = "shortcut";
 
 uint32_t getU(const char *key, uint32_t def) {
   Preferences p;
@@ -33,3 +34,17 @@ uint8_t settingsVolumeTarget() { return getU(kVolTargetKey, kVolumeTargetPhone) 
 void settingsSetVolumeTarget(uint8_t target) { putU(kVolTargetKey, target); }
 uint32_t settingsSwitchSyncSec() { return getU(kSwitchSyncKey, kDefaultSwitchSyncSec); }
 void settingsSetSwitchSyncSec(uint32_t seconds) { putU(kSwitchSyncKey, seconds); }
+String settingsShortcut() {
+  Preferences p;
+  p.begin(kNamespace, true);
+  const String v = p.getString(kShortcutKey, "");
+  p.end();
+  return v;
+}
+
+void settingsSetShortcut(const String &nodeId) {
+  Preferences p;
+  p.begin(kNamespace, false);
+  p.putString(kShortcutKey, nodeId);
+  p.end();
+}

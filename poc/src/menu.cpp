@@ -33,6 +33,7 @@ InputEvent waitAny(uint32_t ms) {
   while (millis() - start < ms) {
     appPump();
     const InputEvent ev = inputPoll();
+    if (ev == InputEvent::ShortcutPress) inputInject(ev);  // close this, then run it
     if (ev != InputEvent::None) return ev;
     delay(5);
   }
@@ -73,6 +74,7 @@ const char *nodeSymbol(JsonObjectConst n) {
     if (a == "screenDim") return LV_SYMBOL_EYE_CLOSE;
     if (a == "screenOff") return LV_SYMBOL_POWER;
     if (a == "switchSync") return LV_SYMBOL_REFRESH;
+    if (a == "shortcut") return LV_SYMBOL_KEYBOARD;
     return LV_SYMBOL_SETTINGS;
   }
   return LV_SYMBOL_PLAY;  // task
@@ -200,7 +202,7 @@ void setBadge(TaskBadge &b, TaskBadge::State st, const char *why) {
 }
 
 
-void startTileTask(JsonObjectConst node) {
+void startTileTask(JsonObjectConst node, JsonObjectConst override = JsonObjectConst()) {
   const char *id = node["id"] | "?";
   if (TaskBadge *b = badgeFor(id); b && b->state == TaskBadge::Busy) {
     Serial.printf("[Task] %s: still waiting for the last reply - ignored\n", id);
@@ -211,11 +213,14 @@ void startTileTask(JsonObjectConst node) {
   // the rest travel at their default. Cancelling sends nothing.
   JsonDocument params;
   if (!collectParams(node, params.to<JsonObject>())) return;
+  for (JsonPairConst kv : override) params[kv.key()] = kv.value();
 
   TaskBadge &b = newBadge(id);
   b = {};
   b.id = id;
-  b.scene = task["payload"]["tuyaScene"] | "";
+  // The scene this run leaves active: the override's (e.g. "Turn Off") if it
+  // names one, else the task's own.
+  b.scene = override["tuyaScene"] | (task["payload"]["tuyaScene"] | "");
   b.scene.trim();
   b.scene.toLowerCase();
   // §6.3: no queue/replay — a stale "lights on" sent on reconnect would be
@@ -794,6 +799,7 @@ void volumeScreen(const String &label) {
       gVol.released = true;  // a turn is a complete move
       lastActivity = millis();
     } else if (ev != InputEvent::None) {
+      if (ev == InputEvent::ShortcutPress) inputInject(ev);  // close, then run it
       return;  // back button / BOOT / push
     }
     if (millis() - lastActivity >= kVolumeIdleMs &&
@@ -906,6 +912,7 @@ void timeoutScreen(const TimeoutSetting &t, const String &label) {
       lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, nullptr);
       lastActivity = millis();
     } else if (ev != InputEvent::None) {
+      if (ev == InputEvent::ShortcutPress) inputInject(ev);  // close, then run it
       Serial.printf("[Settings] %s: %s\n", t.logName, timeoutText(t.get()).c_str());
       return;
     }
@@ -916,6 +923,8 @@ void timeoutScreen(const TimeoutSetting &t, const String &label) {
     delay(5);
   }
 }
+
+void shortcutPickerScreen(const String &title);  // Shortcut button section, below
 
 // --- Local actions (§5.2) -------------------------------------------------------
 
@@ -928,6 +937,8 @@ void runAction(JsonObjectConst node) {
     timeoutScreen(kDimSetting, node["label"] | "Screen dimming");
   } else if (action == "screenOff") {
     timeoutScreen(kOffSetting, node["label"] | "Screen off");
+  } else if (action == "shortcut") {
+    shortcutPickerScreen(node["label"] | "Shortcut button");
   } else if (action == "switchSync") {
     timeoutScreen(kSwitchSyncSetting, node["label"] | "Switch sync");
   } else if (action == "showAbout") {
@@ -950,6 +961,237 @@ void runAction(JsonObjectConst node) {
   } else {
     notice("unknown-action", "Unknown action\n" + action, LV_SYMBOL_WARNING,
            lv_palette_main(LV_PALETTE_AMBER));
+  }
+}
+
+// --- Shortcut button (PIN_SHORTCUT) --------------------------------------------------
+//
+// A physical button that runs one menu item, chosen in Settings > Shortcut
+// button. Works from any menu page; other pages close first (they re-queue
+// the press). Tasks and switches run in place, with a small status pill at
+// the bottom of the screen (their tile may be on another page); local actions
+// and folders simply open.
+
+void openNode(JsonObjectConst node, const String &path);
+
+// Menu nodes a shortcut can run, depth-first, with a "Folder / Item" path.
+struct ShortcutChoice {
+  JsonObjectConst node;
+  String path;
+};
+
+// Items marked "shortcut" in the config (tasks and switches; config_store
+// validates that).
+bool shortcutEnabled(JsonObjectConst n) {
+  JsonVariantConst sc = n["shortcut"];
+  if (sc.isNull() || (sc.is<bool>() && !sc.as<bool>())) return false;
+  const String type = n["type"] | "";
+  return type == "task" || type == "switch";
+}
+
+bool shortcutToggles(JsonObjectConst n) {  // a task with an "off" press
+  return String(n["type"] | "") == "task" && n["shortcut"]["off"].is<JsonObjectConst>();
+}
+
+void collectShortcutChoices(JsonArrayConst nodes, const String &prefix,
+                            std::vector<ShortcutChoice> &out) {
+  for (JsonObjectConst n : nodes) {
+    const String type = n["type"] | "";
+    const String label = n["label"] | "?";
+    const String path = prefix.isEmpty() ? label : prefix + " / " + label;
+    if (shortcutEnabled(n)) out.push_back({n, path});
+    if (type == "folder") collectShortcutChoices(n["children"].as<JsonArrayConst>(), path, out);
+  }
+}
+
+JsonObjectConst findNode(JsonArrayConst nodes, const String &id) {
+  for (JsonObjectConst n : nodes) {
+    if (String(n["id"] | "") == id) return n;
+    if (String(n["type"] | "") == "folder") {
+      JsonObjectConst hit = findNode(n["children"].as<JsonArrayConst>(), id);
+      if (!hit.isNull()) return hit;
+    }
+  }
+  return JsonObjectConst();
+}
+
+// Status pill on the top layer, so it survives screen changes.
+struct ShortcutPill {
+  lv_obj_t *obj = nullptr;
+  String id, label;
+  uint32_t resolvedAt = 0;  // 0 while waiting
+} gPill;
+
+void closePill() {
+  if (gPill.obj) lv_obj_delete(gPill.obj);
+  gPill = {};
+}
+
+void showPill(const String &text, lv_color_t bg) {
+  if (!gPill.obj) {
+    gPill.obj = lv_label_create(lv_layer_top());
+    lv_obj_set_style_bg_opa(gPill.obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(gPill.obj, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_hor(gPill.obj, 14, 0);
+    lv_obj_set_style_pad_ver(gPill.obj, 6, 0);
+    lv_obj_set_style_text_color(gPill.obj, lv_color_white(), 0);
+    lv_obj_remove_flag(gPill.obj, LV_OBJ_FLAG_CLICKABLE);
+  }
+  lv_obj_set_style_bg_color(gPill.obj, bg, 0);
+  lv_label_set_text(gPill.obj, text.c_str());
+  lv_obj_align(gPill.obj, LV_ALIGN_BOTTOM_MID, 0, -8);
+}
+
+// Menu loop hook: follows the run's badge, then clears the pill.
+void pollShortcutPill() {
+  if (!gPill.obj) return;
+  if (gPill.resolvedAt) {
+    if (millis() - gPill.resolvedAt > 2500) closePill();
+    return;
+  }
+  if (gPendingSwitch.active && gPendingSwitch.id == gPill.id) return;  // switch reply due
+  const TaskBadge *b = badgeFor(gPill.id.c_str());
+  if (b && b->state == TaskBadge::Busy) return;
+  const bool ok = !b || b->state == TaskBadge::Ok;  // no badge: nothing to wait for
+  showPill(String(ok ? LV_SYMBOL_OK "  " : LV_SYMBOL_CLOSE "  ") + gPill.label,
+           lv_palette_main(ok ? LV_PALETTE_GREEN : LV_PALETTE_RED));
+  gPill.resolvedAt = millis();
+}
+
+void runShortcut() {
+  const String id = settingsShortcut();
+  closePill();
+  if (id.isEmpty()) {
+    Serial.println("[Shortcut] pressed, but nothing assigned (Settings > Shortcut button)");
+    showPill(LV_SYMBOL_WARNING "  Set it in Settings", lv_palette_main(LV_PALETTE_AMBER));
+    gPill.resolvedAt = millis();
+    return;
+  }
+  JsonObjectConst node = findNode(configMenu(), id);
+  if (node.isNull()) {
+    Serial.printf("[Shortcut] '%s' is no longer in the menu\n", id.c_str());
+    showPill(LV_SYMBOL_WARNING "  Shortcut item missing", lv_palette_main(LV_PALETTE_AMBER));
+    gPill.resolvedAt = millis();
+    return;
+  }
+  if (!shortcutEnabled(node)) {
+    Serial.printf("[Shortcut] '%s' isn't marked \"shortcut\" in the config\n", id.c_str());
+    showPill(LV_SYMBOL_WARNING "  Pick another in Settings", lv_palette_main(LV_PALETTE_AMBER));
+    gPill.resolvedAt = millis();
+    return;
+  }
+  const String type = node["type"] | "";
+  String label = node["label"] | id;
+  // Scenes with an "off": press once to run the scene, again to turn it off.
+  // "On" is whether the panel believes the scene is active (its last run, or
+  // what the Core reported when a scenes page opened).
+  const bool runOff = shortcutToggles(node) && sceneActive(node);
+  if (runOff) label += " off";
+  Serial.printf("[Shortcut] -> %s (%s)%s\n", id.c_str(), type.c_str(), runOff ? ", off" : "");
+  gPill.id = id;
+  gPill.label = label;
+  showPill(String(LV_SYMBOL_REFRESH "  ") + label, lv_palette_main(LV_PALETTE_BLUE));
+  if (type == "switch") toggleSwitch(node);
+  else startTileTask(node, runOff ? node["shortcut"]["off"].as<JsonObjectConst>() : JsonObjectConst());
+}
+
+// Settings > Shortcut button: a list of everything it can run, "None" first.
+int gPickTapped = -1;
+
+void onPickTap(lv_event_t *e) {
+  gPickTapped = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  inputInject(InputEvent::EncoderPressShort);
+}
+
+void shortcutPickerScreen(const String &title) {
+  std::vector<ShortcutChoice> choices;
+  collectShortcutChoices(configMenu(), "", choices);
+  const String current = settingsShortcut();
+
+  lv_obj_t *scr = uiBlankScreen("shortcut-picker");
+  lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);  // swipe right = back
+  takeSwipe();
+  makePageHeader(scr, title);
+
+  lv_obj_t *list = lv_obj_create(scr);
+  lv_obj_remove_style_all(list);
+  lv_obj_set_pos(list, 6, 52);
+  lv_obj_set_size(list, 320 - 12, 172 - 52 - 4);
+  lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(list, 4, 0);
+  lv_obj_set_scroll_dir(list, LV_DIR_VER);
+
+  std::vector<lv_obj_t *> rows;
+  int selected = 0;
+  for (size_t i = 0; i <= choices.size(); i++) {
+    const bool none = i == 0;
+    const String id = none ? String("") : String(choices[i - 1].node["id"] | "");
+    lv_obj_t *row = lv_obj_create(list);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), 34);
+    lv_obj_set_style_radius(row, 8, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(0x1C1C1C), 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(0x3A3A3A), LV_STATE_PRESSED);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(row, onPickTap, LV_EVENT_CLICKED,
+                        reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+    lv_obj_t *l = lv_label_create(row);
+    const String text = none ? String(LV_SYMBOL_CLOSE "  None")
+                             : String(nodeSymbol(choices[i - 1].node)) + "  " + choices[i - 1].path;
+    lv_label_set_text(l, text.c_str());
+    lv_obj_set_width(l, LV_PCT(100) );
+    lv_obj_set_style_pad_left(l, 10, 0);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+    lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+    if (id == current) {
+      selected = i;
+      lv_obj_set_style_text_color(l, lv_palette_main(LV_PALETTE_BLUE), 0);
+      lv_obj_set_style_border_width(row, 2, 0);
+      lv_obj_set_style_border_color(row, lv_palette_main(LV_PALETTE_BLUE), 0);
+    }
+    rows.push_back(row);
+  }
+  int focus = selected;
+  auto showFocus = [&]() {
+    for (size_t i = 0; i < rows.size(); i++) {
+      lv_obj_set_style_bg_color(rows[i], lv_color_hex(static_cast<int>(i) == focus ? 0x2E3A4A : 0x1C1C1C), 0);
+    }
+    lv_obj_scroll_to_view(rows[focus], LV_ANIM_ON);
+  };
+  showFocus();
+
+  Serial.printf("[Shortcut] picker: %u choice(s); tap one, or turn + push; back closes\n",
+                (unsigned)rows.size());
+  gPickTapped = -1;
+  while (true) {
+    appPump();
+    const InputEvent ev = inputPoll();
+    if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
+      if (takeSwipe()) {
+        if (ev == InputEvent::EncoderCCW) return;  // swipe right: back
+        continue;
+      }
+      focus = (focus + (ev == InputEvent::EncoderCW ? 1 : static_cast<int>(rows.size()) - 1)) %
+              static_cast<int>(rows.size());
+      showFocus();
+    } else if (ev == InputEvent::EncoderPressShort) {
+      const int pick = gPickTapped >= 0 ? gPickTapped : focus;
+      const String id = pick == 0 ? String("") : String(choices[pick - 1].node["id"] | "");
+      settingsSetShortcut(id);
+      Serial.printf("[Shortcut] assigned: %s\n",
+                    pick == 0 ? "none" : choices[pick - 1].path.c_str());
+      return;
+    } else if (ev == InputEvent::ShortcutPress) {
+      inputInject(ev);  // close, then the menu runs it
+      return;
+    } else if (ev != InputEvent::None) {
+      if (ev == InputEvent::ShortcutPress) inputInject(ev);  // close, then run it
+      return;  // back button / BOOT / swipe down
+    }
+    if (lv_display_get_inactive_time(nullptr) >= 30000) return;
+    delay(5);
   }
 }
 
@@ -1123,6 +1365,7 @@ void deviceDetailsScreen() {
       lastRefresh = 0;
       Serial.printf("[Details] page %d/%d\n", page + 1, kDetailsPages);
     } else if (ev != InputEvent::None) {
+      if (ev == InputEvent::ShortcutPress) inputInject(ev);  // close, then run it
       return;  // back button / BOOT / swipe down
     }
     if (lv_display_get_inactive_time(nullptr) >= kDetailsIdleMs) return;
@@ -1395,6 +1638,7 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
         const bool switchUndone = pollSwitchReply();
         const bool tasks = pollTileTasks();
         const bool synced = pollSwitchSync();
+        pollShortcutPill();
         if (pollSceneState() || tasks || switchUndone || synced) break;  // a tile changed: redraw
       }
       if (linkState() != drawnLink) {
@@ -1455,6 +1699,9 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
       case InputEvent::SecondaryAction:
         if (root) deviceDetailsScreen();
         break;
+      case InputEvent::ShortcutPress:
+        runShortcut();  // then redraw this level (a switch may have flipped)
+        break;
       default:
         break;
     }
@@ -1501,6 +1748,9 @@ void menuHome() {
                  "'a' shows status");
   displaySetAutoDim(settingsDimAfterSec());
   displaySetAutoOff(settingsOffAfterSec());
+  // Which scene is active, once at boot: the shortcut button's on/off scenes
+  // need it before any scenes page has been opened.
+  if (netMqttIsConnected()) requestSceneState();
   showLevel(configMenu(), "Menu", true);
 }
 

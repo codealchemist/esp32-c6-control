@@ -33,7 +33,8 @@
         "off": {
           "tuyaScene": "Turn Off"
         }
-      }
+      },
+      "shortcut": true
     },
     {
       "id": "volume",
@@ -68,6 +69,11 @@
             },
             "qos": 1,
             "expectsResult": true
+          },
+          "shortcut": {
+            "off": {
+              "tuyaScene": "Turn Off"
+            }
           }
         },
         {
@@ -82,6 +88,11 @@
             },
             "qos": 1,
             "expectsResult": true
+          },
+          "shortcut": {
+            "off": {
+              "tuyaScene": "Turn Off"
+            }
           }
         },
         {
@@ -96,6 +107,11 @@
             },
             "qos": 1,
             "expectsResult": true
+          },
+          "shortcut": {
+            "off": {
+              "tuyaScene": "Turn Off"
+            }
           }
         }
       ]
@@ -123,6 +139,12 @@
           "type": "action",
           "label": "Switch sync",
           "action": "switchSync"
+        },
+        {
+          "id": "shortcut",
+          "type": "action",
+          "label": "Shortcut button",
+          "action": "shortcut"
         },
         {
           "id": "reprovision",

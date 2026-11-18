@@ -61,6 +61,7 @@ struct ButtonState {
 
 ButtonState gButton;
 ButtonState gEncoderButton;
+ButtonState gShortcutButton;
 
 // Touch-injected events. Small ring buffer: a quick double-tap on "+" must
 // count twice, which a single slot would drop.
@@ -116,6 +117,9 @@ void inputInit() {
 
   gButton.pin = PIN_BUTTON;
   gEncoderButton.pin = PIN_ENCODER_SW;
+  // Button to GND; internal pull-up, no external parts needed.
+  pinMode(PIN_SHORTCUT, INPUT_PULLUP);
+  gShortcutButton.pin = PIN_SHORTCUT;
 
   attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CLK), onEncoderPinChange, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_DT), onEncoderPinChange, CHANGE);
@@ -134,6 +138,13 @@ static InputEvent inputPollRaw();
 // consumed by the wake (display.h).
 InputEvent inputPoll() {
   const InputEvent ev = inputPollRaw();
+  // The shortcut button acts even on a dimmed or off screen: it's a physical
+  // "do this now" button (lights on), and a first press that only woke the
+  // screen would look like it didn't work.
+  if (ev == InputEvent::ShortcutPress) {
+    displayNoteActivity();
+    return ev;
+  }
   if (ev != InputEvent::None && displayNoteActivity()) return InputEvent::None;
   return ev;
 }
@@ -160,9 +171,26 @@ static InputEvent inputPollRaw() {
                               InputEvent::EncoderPressShort, InputEvent::EncoderPressLong);
   if (ev != InputEvent::None) return ev;
 
+  // Short and long press both run the shortcut (a long one fires once, at
+  // the long-press threshold): a slow press shouldn't do nothing.
+  ev = pollButton(gShortcutButton, input_timing::kButtonDebounceMs,
+                  input_timing::kButtonLongPressMs, InputEvent::ShortcutPress,
+                  InputEvent::ShortcutPress);
+  if (ev != InputEvent::None) {
+    Serial.println("[Input] shortcut button pressed (GPIO17)");
+    return ev;
+  }
+
   return pollButton(gButton, input_timing::kButtonDebounceMs,
                      input_timing::kButtonLongPressMs, InputEvent::ButtonPressShort,
                      InputEvent::ButtonPressLong);
 }
 
 bool inputButtonHeldNow() { return digitalRead(PIN_BUTTON) == LOW; }
+
+void inputPrintPins() {
+  Serial.printf("[Input] pins: shortcut(17)=%d BOOT(8)=%d enc CLK(3)=%d DT(7)=%d SW(4)=%d "
+                "(1 = released, 0 = pressed/closed)\n",
+                digitalRead(PIN_SHORTCUT), digitalRead(PIN_BUTTON), digitalRead(PIN_ENCODER_CLK),
+                digitalRead(PIN_ENCODER_DT), digitalRead(PIN_ENCODER_SW));
+}

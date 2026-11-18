@@ -958,8 +958,8 @@ void runAction(JsonObjectConst node) {
 // Full pages like the menu's: Connection (Wi-Fi, IP, signal, MQTT broker,
 // Core version — asked from the Core when the page opens) and Device (chip,
 // memory, uptime, battery, firmware build). Swipe left/right (or turn the
-// encoder) to switch pages; back button, BOOT, swipe down, or swipe right on
-// the first page closes; so does
+// encoder) to switch pages; back button, BOOT, swipe down, or swipe right /
+// turn left on the first page closes; so does
 // 30s without input. Values refresh every second.
 
 constexpr uint32_t kDetailsIdleMs = 30000;
@@ -1116,7 +1116,8 @@ void deviceDetailsScreen() {
     const InputEvent ev = inputPoll();
     if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
       const bool fwd = ev == InputEvent::EncoderCW;
-      if (takeSwipe() && !fwd && page == 0) return;  // swipe right on the first page: back
+      takeSwipe();
+      if (!fwd && page == 0) return;  // swipe right / turn left on the first page: back
       page = (page + (fwd ? 1 : kDetailsPages - 1)) % kDetailsPages;
       p = drawDetailsPage(page, fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT);
       lastRefresh = 0;
@@ -1422,6 +1423,12 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
           if (pages > 1) anim = fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;
           Serial.printf("[Menu] swipe -> page %u/%u\n", page + 1, pages);
         } else {          // encoder: item by item
+          // Turning left past the first item backs out of a folder, like
+          // the swipe does (home has nowhere to go back to: it wraps).
+          if (!fwd && !root && (selected == 0 || (selected < 0 && page == 0))) {
+            Serial.println("[Menu] encoder -> back");
+            return;
+          }
           const size_t before = page;
           selected = selected < 0 ? static_cast<int>(page * 2)
                                   : (fwd ? (selected + 1) % n : (selected + n - 1) % n);

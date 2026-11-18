@@ -192,11 +192,13 @@ void showWelcomeScreen() {
 }
 
 void addIconToWelcomeScreen() {
-  lv_obj_t *img = lv_image_create(gWelcomeScreen);
-  // Which icon this is comes from icons_manifest.json's "welcomeIcon" —
-  // changing it is a manifest edit, not a code edit.
-  lv_image_set_src(img, kWelcomeIcon);
-  lv_obj_align(img, LV_ALIGN_LEFT_MID, 16, 0);
+  // A built-in font symbol (no image to store): a connected device. The
+  // project uses no Google services, so no third-party logo here.
+  lv_obj_t *icon = lv_label_create(gWelcomeScreen);
+  lv_label_set_text(icon, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+  lv_obj_align(icon, LV_ALIGN_LEFT_MID, 24, 0);
 }
 
 void showDeviceInfoScreen() {

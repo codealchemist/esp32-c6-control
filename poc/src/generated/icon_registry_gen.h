@@ -9,7 +9,6 @@
 // screen — see showAboutScreen() in main.cpp.
 static const char *const kIconAttribution = "Icons by Icons8 - https://icons8.com";
 
-extern const lv_image_dsc_t icon_google;
 extern const lv_image_dsc_t icon_light_on;
 extern const lv_image_dsc_t icon_volume;
 extern const lv_image_dsc_t icon_scenes;
@@ -21,7 +20,6 @@ extern const lv_image_dsc_t icon_computer;
 
 struct IconRegistryEntry { const char *id; const lv_image_dsc_t *img; };
 static const IconRegistryEntry kIconRegistry[] = {
-    {"icon_google", &icon_google},
     {"icon_light_on", &icon_light_on},
     {"icon_volume", &icon_volume},
     {"icon_scenes", &icon_scenes},
@@ -31,7 +29,4 @@ static const IconRegistryEntry kIconRegistry[] = {
     {"icon_phone", &icon_phone},
     {"icon_computer", &icon_computer},
 };
-static const size_t kIconRegistryCount = 9;
-
-// Selected by icons_manifest.json's "welcomeIcon".
-static const lv_image_dsc_t *const kWelcomeIcon = &icon_google;
+static const size_t kIconRegistryCount = 8;

@@ -47,7 +47,6 @@
       "id": "messages",
       "type": "folder",
       "label": "Messages",
-      "icon": "icon_mail",
       "binding": "message_inbox",
       "children": []
     },
@@ -120,7 +119,6 @@
       "id": "settings",
       "type": "folder",
       "label": "Settings",
-      "icon": "icon_settings",
       "children": [
         {
           "id": "screen-dim",
@@ -150,21 +148,18 @@
           "id": "reprovision",
           "type": "action",
           "label": "Reset Wi-Fi/MQTT",
-          "icon": "icon_reset",
           "action": "reprovision"
         },
         {
           "id": "restore-config",
           "type": "action",
           "label": "Restore Default Config",
-          "icon": "icon_restore",
           "action": "restoreDefaultConfig"
         },
         {
           "id": "about",
           "type": "action",
           "label": "About",
-          "icon": "icon_info",
           "action": "showAbout"
         }
       ]

@@ -15,22 +15,13 @@
     "hand-edited art is safe, and offline builds just work). Only a missing",
     "file triggers a download. To pick up a changed setting below \u2014 iconColor,",
     "color, preserveColors, style, sourceExportSize \u2014 DELETE the PNG and",
-    "rebuild; editing the setting alone will not re-fetch it.",
-    "\"welcomeIcon\" picks which icon the welcome screen renders \u2014 see",
-    "kWelcomeIcon in the generated src/generated/icon_registry_gen.h."
+    "rebuild; editing the setting alone will not re-fetch it."
   ],
   "style": "ios-filled",
   "sourceExportSize": 64,
   "iconColor": "FFFFFF",
-  "welcomeIcon": "icon_google",
   "attribution": "Icons by Icons8 - https://icons8.com",
   "icons": [
-    {
-      "id": "icon_google",
-      "source": "https://icons8.com/icon/17950/google-logo",
-      "license": "free-attribution",
-      "file": "data/icons_src/icons8/icon_google.png"
-    },
     {
       "id": "icon_light_on",
       "source": "light-on",

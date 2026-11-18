@@ -996,8 +996,7 @@ artwork is present and the network is not touched on every rebuild.
 Deleting a PNG is what re-fetches it.
 
 The pipeline fails the build loudly rather than shipping wrong art: an
-unknown icon name, a `welcomeIcon` naming no defined icon, a duplicate
-icon id, or a response that isn't a PNG (Icons8 answers unrecognised
+unknown icon name, a duplicate icon id, or a response that isn't a PNG (Icons8 answers unrecognised
 requests with an HTML page, which is checked for explicitly).
 
 If the paid tier is ever adopted after all, the *only* change that should
@@ -1016,7 +1015,6 @@ with a valid key — the manifest and everything downstream stays identical.
   // Icons8 free tier requires a visible credit (§12.1); the build fails
   // without this and renders it on the showAbout screen (§5.2).
   "attribution": "Icons by Icons8 - https://icons8.com",
-  "welcomeIcon": "icon_light_on",
   "icons": [
     {
       "id": "icon_light_on",

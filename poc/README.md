@@ -43,27 +43,27 @@ sequence, and the pass/fail checklist. This file is just the mechanical
 5. **Confirm the input pins** in `src/pins.h` — KY-040 CLK/DT/SW and the
    dedicated button are placeholders, not your board's actual wiring.
 6. ~~**Get one real icon.**~~ **Automated** — the build downloads it. See
-   *Choosing the welcome icon* below. The synthetic placeholder is gone;
+   *Adding icons* below. The synthetic placeholder is gone;
    the pipeline now pulls real Icons8 artwork.
 
-## Choosing the welcome icon
+## Adding icons
 
-Edit `data/icons_manifest.json` — no code change needed. `"welcomeIcon"`
-names which icon the welcome screen renders, and each icon's `"source"`
-takes either form:
+Edit `data/icons_manifest.json`; menu items then refer to the icon by its
+`"id"` in the config. Each icon's `"source"` takes either form:
 
 ```jsonc
 // by Icons8 page URL — fetches that exact icon by its numeric ID
-{ "id": "icon_google", "source": "https://icons8.com/icon/17950/google-logo" }
+{ "id": "icon_night", "source": "https://icons8.com/icon/<id>/<name>" }
 
 // by bare name — fetches within the manifest's "style", so a set of
 // icons requested this way stays visually consistent
-{ "id": "icon_google", "source": "google" }
+{ "id": "icon_night", "source": "crescent-moon" }
 ```
 
-The two return **different artwork for the same word** — id `17950` and
-`ios-filled`/`google` are distinct glyph designs. Use the URL form when a
-specific icon matters, the name form when style consistency does.
+The two can return **different artwork for the same word**. Use the URL
+form when a specific icon matters, the name form when style consistency
+does. (The welcome screen uses a built-in font symbol, not an icon from
+this manifest.)
 
 **Icon colour under the dark theme.** `"iconColor"` (default `FFFFFF`)
 tints **both** forms. This isn't cosmetic: Icons8 icons default to solid
@@ -109,8 +109,8 @@ missing — delete one to re-fetch it. See *When do icons download?* below.
 size (LVGLImage.py does not resize).
 
 Mistakes fail the build loudly rather than silently shipping the wrong
-art: an unknown icon name, a `"welcomeIcon"` that names no defined icon, a
-duplicate icon id, or a response that isn't actually a PNG.
+art: an unknown icon name, a duplicate icon id, or a response that isn't
+actually a PNG.
 
 ### Licensing — decided, with one accepted risk
 

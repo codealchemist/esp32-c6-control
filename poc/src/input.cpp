@@ -1,5 +1,7 @@
 #include "input.h"
 
+#include "display.h"
+
 #include <Arduino.h>
 
 #include "input_timing.h"
@@ -126,7 +128,17 @@ void inputInject(InputEvent ev) {
   gInjectTail = next;
 }
 
+static InputEvent inputPollRaw();
+
+// Every input restarts the auto-dim timer; one that wakes a dimmed screen is
+// consumed by the wake (display.h).
 InputEvent inputPoll() {
+  const InputEvent ev = inputPollRaw();
+  if (ev != InputEvent::None && displayNoteActivity()) return InputEvent::None;
+  return ev;
+}
+
+static InputEvent inputPollRaw() {
   if (gInjectHead != gInjectTail) {
     const InputEvent ev = gInjected[gInjectHead];
     gInjectHead = (gInjectHead + 1) % kInjectCap;

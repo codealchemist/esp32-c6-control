@@ -304,7 +304,14 @@ provisioned to NVS separately, never stored in the JSON config alongside
   `"phoneVolume"` (a slider that sends volume up/down key presses to the
   user's phone, paired to the panel as a Bluetooth LE HID media remote —
   the C6 has no Bluetooth Classic, so HID over GATT rather than AVRCP; the
-  phone never reports its level, so the slider is an estimate). Handled by
+  phone never reports its level, so the slider is an estimate), and
+  `"screenDim"` (how long without input before the backlight dims — Never,
+  10 s … 10 min, default 30 s; an on-device setting kept in NVS, not in the
+  config; the touch that wakes a dimmed screen does nothing else), and
+  `"screenOff"` (same idea one step further: after Never / 30 s … 30 min,
+  default 5 min, the backlight goes to 0 and the panel sleeps; any touch,
+  button or encoder input turns it back on and is otherwise ignored).
+  Handled by
   `app/system_actions.cpp/.h` (POC: `menu.cpp`, `phone_hid.cpp`).
 
 #### 5.2.1 Parameter types

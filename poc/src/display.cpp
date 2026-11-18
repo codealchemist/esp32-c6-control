@@ -162,9 +162,25 @@ bool simRead(int16_t &x, int16_t &y) {
   return true;
 }
 
+// Auto-dim (displaySetAutoDim): backlight drops after a stretch of no input;
+// the next touch only wakes it — that whole press is hidden from LVGL so it
+// can't also press whatever is under the finger.
+uint32_t gAutoDimMs = 0;  // 0 = never
+uint32_t gAutoOffMs = 0;  // 0 = never
+enum class Screen { On, Dimmed, Off } gScreen = Screen::On;
+bool gSwallowTouch = false;
+
 void lvglTouchReadCb(lv_indev_t *, lv_indev_data_t *data) {
   int16_t x, y;
-  const bool pressed = gSim.active ? simRead(x, y) : touchRead(x, y);
+  bool pressed = gSim.active ? simRead(x, y) : touchRead(x, y);
+  if (pressed && gScreen != Screen::On) {
+    displayNoteActivity();  // wakes
+    gSwallowTouch = true;
+  }
+  if (gSwallowTouch) {
+    if (pressed) pressed = false;
+    else gSwallowTouch = false;
+  }
   data->point.x = x;
   data->point.y = y;
   data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
@@ -202,7 +218,49 @@ void displayInit() {
 
 void displaySetBrightness(uint8_t level) { gLcd.setBrightness(level); }
 
+void displaySetAutoDim(uint32_t seconds) {
+  gAutoDimMs = seconds * 1000;
+  Serial.printf("[Display] dim %s\n", seconds ? (String("after ") + seconds + "s idle").c_str() : "never");
+  displayNoteActivity();  // a changed timeout starts counting from now
+}
+
+void displaySetAutoOff(uint32_t seconds) {
+  gAutoOffMs = seconds * 1000;
+  Serial.printf("[Display] off %s\n", seconds ? (String("after ") + seconds + "s idle").c_str() : "never");
+  displayNoteActivity();
+}
+
+bool displayNoteActivity() {
+  lv_display_trigger_activity(gDisplay);
+  if (gScreen == Screen::On) return false;
+  if (gScreen == Screen::Off) {
+    gLcd.wakeup();  // panel out of sleep (SLPOUT); its RAM kept the image
+    lv_obj_invalidate(lv_screen_active());
+  }
+  gScreen = Screen::On;
+  gLcd.setBrightness(kBrightnessNormal);
+  Serial.println("[Display] wake");
+  return true;
+}
+
+bool displayIsDimmed() { return gScreen != Screen::On; }
+
 void displayTick() {
+  // Idle ladder: on -> dimmed -> off. Either step can be "never"; if off
+  // comes first the dim step is simply skipped.
+  if (gScreen != Screen::Off && (gAutoDimMs || gAutoOffMs)) {
+    const uint32_t idle = lv_display_get_inactive_time(gDisplay);
+    if (gAutoOffMs && idle >= gAutoOffMs) {
+      gScreen = Screen::Off;
+      gLcd.setBrightness(0);
+      gLcd.sleep();  // panel SLPIN: stops driving the LCD too, not just the backlight
+      Serial.println("[Display] off (idle)");
+    } else if (gScreen == Screen::On && gAutoDimMs && idle >= gAutoDimMs) {
+      gScreen = Screen::Dimmed;
+      gLcd.setBrightness(kBrightnessDim);
+      Serial.println("[Display] dimmed (idle)");
+    }
+  }
   lv_timer_handler();
   // Every wait loop in the app pumps the display through here, so this is
   // where the loop watchdog is fed (enabled at the end of setup()). If the

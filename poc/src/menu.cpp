@@ -9,8 +9,10 @@
 #include "config_store.h"
 #include "input.h"
 #include "generated/icon_registry_gen.h"
+#include "display.h"
 #include "net.h"
 #include "phone_hid.h"
+#include "settings.h"
 #include "provisioning.h"
 #include "ui_layout.h"
 
@@ -62,7 +64,11 @@ const char *nodeSymbol(JsonObjectConst n) {
   }
   if (type == "switch") return LV_SYMBOL_POWER;
   if (type == "action") {
-    return String(n["action"] | "") == "phoneVolume" ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_SETTINGS;
+    const String a = n["action"] | "";
+    if (a == "phoneVolume") return LV_SYMBOL_VOLUME_MAX;
+    if (a == "screenDim") return LV_SYMBOL_EYE_CLOSE;
+    if (a == "screenOff") return LV_SYMBOL_POWER;
+    return LV_SYMBOL_SETTINGS;
   }
   return LV_SYMBOL_PLAY;  // task
 }
@@ -324,12 +330,11 @@ void onVolumeSlider(lv_event_t *e) {
   }
 }
 
-void onVolumeBack(lv_event_t *) { inputInject(InputEvent::ButtonPressShort); }
+void onPageBack(lv_event_t *) { inputInject(InputEvent::ButtonPressShort); }
 
-void phoneVolumeScreen(const String &label) {
-  lv_obj_t *scr = uiBlankScreen("phone-volume");
-
-  // Small back button, top-left.
+// Header for single-control pages (Volume, Screen dimming): a small back
+// button top-left (sends BOOT's "back") and a grey title beside it.
+void makePageHeader(lv_obj_t *scr, const String &title) {
   lv_obj_t *back = lv_button_create(scr);
   lv_obj_set_size(back, 56, 40);
   lv_obj_set_pos(back, 6, 6);
@@ -338,33 +343,48 @@ void phoneVolumeScreen(const String &label) {
   lv_obj_set_style_bg_color(back, lv_color_hex(0x4A4A4A), LV_STATE_PRESSED);
   lv_obj_set_style_shadow_width(back, 0, 0);
   lv_obj_set_ext_click_area(back, 8);
-  lv_obj_add_event_cb(back, onVolumeBack, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(back, onPageBack, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *backL = lv_label_create(back);
   lv_label_set_text(backL, LV_SYMBOL_LEFT);
   lv_obj_center(backL);
 
-  lv_obj_t *title = lv_label_create(scr);
-  lv_label_set_text(title, (String(LV_SYMBOL_VOLUME_MAX "  ") + label).c_str());
-  lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_GREY), 0);
-  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 74, 16);
+  lv_obj_t *t = lv_label_create(scr);
+  lv_label_set_text(t, title.c_str());
+  lv_obj_set_style_text_color(t, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_align(t, LV_ALIGN_TOP_LEFT, 74, 16);
+}
 
-  static VolumeUi ui;
-  ui.value = lv_label_create(scr);
-  lv_obj_set_style_text_font(ui.value, &lv_font_montserrat_48, 0);
-  lv_label_set_text(ui.value, String(gPhoneVolume).c_str());
-  lv_obj_align(ui.value, LV_ALIGN_TOP_MID, 0, 46);
-
+// The page's one slider: full width, big value label above it, owns every
+// drag that starts on or near it.
+lv_obj_t *makePageSlider(lv_obj_t *scr, int32_t min, int32_t max, int32_t value) {
   lv_obj_t *slider = lv_slider_create(scr);
-  lv_slider_set_range(slider, 0, 100);
-  lv_slider_set_value(slider, gPhoneVolume, LV_ANIM_OFF);
+  lv_slider_set_range(slider, min, max);
+  lv_slider_set_value(slider, value, LV_ANIM_OFF);
   lv_obj_set_size(slider, 320 - 2 * 28, 14);
   lv_obj_align(slider, LV_ALIGN_TOP_MID, 0, 122);
   lv_obj_set_style_pad_all(slider, 10, LV_PART_KNOB);  // finger-sized knob
-  // The slider owns every drag that starts on or near it: a 34px band above
-  // and below the bar, and no gesture/scroll handling stealing the move.
   lv_obj_set_ext_click_area(slider, 34);
   lv_obj_remove_flag(slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_remove_flag(slider, LV_OBJ_FLAG_SCROLL_CHAIN);
+  return slider;
+}
+
+lv_obj_t *makePageValue(lv_obj_t *scr, const String &text) {
+  lv_obj_t *v = lv_label_create(scr);
+  lv_obj_set_style_text_font(v, &lv_font_montserrat_48, 0);
+  lv_label_set_text(v, text.c_str());
+  lv_obj_align(v, LV_ALIGN_TOP_MID, 0, 46);
+  return v;
+}
+
+void phoneVolumeScreen(const String &label) {
+  lv_obj_t *scr = uiBlankScreen("phone-volume");
+
+  makePageHeader(scr, String(LV_SYMBOL_VOLUME_MAX "  ") + label);
+
+  static VolumeUi ui;
+  ui.value = makePageValue(scr, String(gPhoneVolume));
+  lv_obj_t *slider = makePageSlider(scr, 0, 100, gPhoneVolume);
   lv_obj_add_event_cb(slider, onVolumeSlider, LV_EVENT_VALUE_CHANGED, &ui);
 
   lv_obj_t *hint = lv_label_create(scr);
@@ -406,6 +426,104 @@ void phoneVolumeScreen(const String &label) {
   }
 }
 
+// --- Screen timeouts (local actions "screenDim", "screenOff") ----------------------
+//
+// How long without input before the backlight dims / the screen turns off: a
+// slider over fixed choices, applied and saved as it moves. Back / BOOT
+// closes. Any input wakes the screen (display.h), and that input does
+// nothing else.
+
+struct TimeoutSetting {
+  const char *logName;
+  const char *symbol;
+  const char *hint;
+  const uint32_t *choices;  // seconds; 0 = never
+  int count;
+  uint32_t (*get)();
+  void (*set)(uint32_t);
+  void (*apply)(uint32_t);
+};
+
+const uint32_t kDimChoices[] = {0, 10, 15, 30, 60, 120, 300, 600};
+const uint32_t kOffChoices[] = {0, 30, 60, 120, 300, 600, 1800};
+
+const TimeoutSetting kDimSetting = {
+    "screen dim", LV_SYMBOL_EYE_CLOSE, "Dim the screen after this long idle", kDimChoices,
+    sizeof(kDimChoices) / sizeof(kDimChoices[0]), settingsDimAfterSec, settingsSetDimAfterSec,
+    displaySetAutoDim};
+const TimeoutSetting kOffSetting = {
+    "screen off", LV_SYMBOL_POWER, "Turn the screen off after this long idle", kOffChoices,
+    sizeof(kOffChoices) / sizeof(kOffChoices[0]), settingsOffAfterSec, settingsSetOffAfterSec,
+    displaySetAutoOff};
+
+String timeoutText(uint32_t sec) {
+  if (sec == 0) return "Never";
+  if (sec < 60) return String(sec) + " s";
+  return String(sec / 60) + " min";
+}
+
+int timeoutIndex(const TimeoutSetting &t, uint32_t sec) {
+  int best = 0;
+  for (int i = 0; i < t.count; i++) {
+    if (t.choices[i] == sec) return i;
+    if (t.choices[i] < sec) best = i;
+  }
+  return best;
+}
+
+struct TimeoutUi {
+  const TimeoutSetting *setting;
+  lv_obj_t *value;
+};
+
+void onTimeoutSlider(lv_event_t *e) {
+  auto *slider = static_cast<lv_obj_t *>(lv_event_get_target(e));
+  auto *ui = static_cast<TimeoutUi *>(lv_event_get_user_data(e));
+  const TimeoutSetting &t = *ui->setting;
+  const uint32_t sec = t.choices[lv_slider_get_value(slider)];
+  if (sec == t.get()) return;
+  t.set(sec);
+  t.apply(sec);
+  lv_label_set_text(ui->value, timeoutText(sec).c_str());
+}
+
+void timeoutScreen(const TimeoutSetting &t, const String &label) {
+  lv_obj_t *scr = uiBlankScreen("timeout-setting");
+  makePageHeader(scr, String(t.symbol) + "  " + label);
+  const uint32_t current = t.get();
+  static TimeoutUi ui;
+  ui = {&t, makePageValue(scr, timeoutText(current))};
+  lv_obj_t *slider = makePageSlider(scr, 0, t.count - 1, timeoutIndex(t, current));
+  lv_obj_add_event_cb(slider, onTimeoutSlider, LV_EVENT_VALUE_CHANGED, &ui);
+
+  lv_obj_t *hint = lv_label_create(scr);
+  lv_label_set_text(hint, t.hint);
+  lv_obj_set_style_text_color(hint, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+
+  Serial.printf("[Settings] %s: drag the slider ('+'/'-' = encoder); back or 'b' closes\n",
+                t.logName);
+  uint32_t lastActivity = millis();
+  while (true) {
+    appPump();
+    const InputEvent ev = inputPoll();
+    if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
+      const int idx = lv_slider_get_value(slider) + (ev == InputEvent::EncoderCW ? 1 : -1);
+      lv_slider_set_value(slider, idx, LV_ANIM_OFF);
+      lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, nullptr);
+      lastActivity = millis();
+    } else if (ev != InputEvent::None) {
+      Serial.printf("[Settings] %s: %s\n", t.logName, timeoutText(t.get()).c_str());
+      return;
+    }
+    if (millis() - lastActivity >= kVolumeIdleMs &&
+        lv_display_get_inactive_time(nullptr) >= kVolumeIdleMs) {
+      return;
+    }
+    delay(5);
+  }
+}
+
 // --- Local actions (§5.2) -------------------------------------------------------
 
 void runAction(JsonObjectConst node) {
@@ -413,6 +531,10 @@ void runAction(JsonObjectConst node) {
   Serial.println("[Menu] action " + action);
   if (action == "phoneVolume") {
     phoneVolumeScreen(node["label"] | "Volume");
+  } else if (action == "screenDim") {
+    timeoutScreen(kDimSetting, node["label"] | "Screen dimming");
+  } else if (action == "screenOff") {
+    timeoutScreen(kOffSetting, node["label"] | "Screen off");
   } else if (action == "showAbout") {
     notice("about", "About\nIcons by Icons8 - https://icons8.com", LV_SYMBOL_LIST,
            lv_color_white());
@@ -736,6 +858,8 @@ void menuHome(std::function<String()> statusText) {
   Serial.println("[Menu] home: tap an item to open, swipe left/right to page, swipe down or "
                  "tap the header to go back; encoder +/- selects, 's' opens, 'b' back, "
                  "'a' shows status");
+  displaySetAutoDim(settingsDimAfterSec());
+  displaySetAutoOff(settingsOffAfterSec());
   showLevel(configMenu(), "Menu", true, statusText);
 }
 

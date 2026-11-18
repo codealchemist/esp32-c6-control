@@ -106,6 +106,18 @@
       "icon": "icon_settings",
       "children": [
         {
+          "id": "screen-dim",
+          "type": "action",
+          "label": "Screen dimming",
+          "action": "screenDim"
+        },
+        {
+          "id": "screen-off",
+          "type": "action",
+          "label": "Screen off",
+          "action": "screenOff"
+        },
+        {
           "id": "reprovision",
           "type": "action",
           "label": "Reset Wi-Fi/MQTT",

@@ -60,6 +60,12 @@
       "source": "sun",
       "license": "free-attribution",
       "file": "data/icons_src/icons8/icon_day.png"
+    },
+    {
+      "id": "icon_high_night",
+      "source": "bright-moon",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_high_night.png"
     }
   ]
 }

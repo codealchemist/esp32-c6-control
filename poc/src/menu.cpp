@@ -684,11 +684,13 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     lv_obj_add_event_cb(cell, onCellClicked, LV_EVENT_CLICKED,
                         reinterpret_cast<void *>(static_cast<intptr_t>(idx)));
 
-    // Switches: icon lit amber when on, dimmed when off, a toggle under the
-    // label; everything sits 4px higher to make room for it.
+    // Switches: icon lit amber when on, dimmed when off, and a toggle under
+    // the label. To give the toggle clear space (12px above, 8px below) the
+    // icon draws at 48px instead of 64 and the label keeps to one line:
+    //   icon 8..56 | label 64..~94 | gap | toggle 106..130 | 8px
     const bool isSwitch = String(node["type"] | "") == "switch";
     const bool on = isSwitch && switchState(node);
-    const int32_t top = isSwitch ? 8 : 12;
+    const int32_t top = isSwitch ? 0 : 12;  // switch: 64px box, art drawn at 48 inside it
     const lv_color_t iconColor = !isSwitch ? lv_color_white()
                                  : on      ? lv_palette_main(LV_PALETTE_AMBER)
                                            : lv_palette_darken(LV_PALETTE_GREY, 1);
@@ -701,6 +703,7 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
       icon = lv_image_create(cell);
       lv_image_set_src(icon, art);
       if (isSwitch) {
+        lv_image_set_scale(icon, 192);  // 75%: 64 -> 48px, centred in its 64px box
         lv_obj_set_style_image_recolor(icon, iconColor, 0);
         lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
       }
@@ -710,19 +713,19 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
       lv_label_set_text(icon, nodeSymbol(node));
       lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
       lv_obj_set_style_text_color(icon, iconColor, 0);
-      lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, top + 6);
+      lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, isSwitch ? 4 : top + 6);
     }
 
     if (isSwitch) {
       // Display only: taps land on the cell, which toggles it.
       lv_obj_t *toggle = lv_switch_create(cell);
-      lv_obj_set_size(toggle, 52, 26);
+      lv_obj_set_size(toggle, 48, 24);
       lv_obj_remove_flag(toggle, LV_OBJ_FLAG_CLICKABLE);
       lv_obj_add_flag(toggle, LV_OBJ_FLAG_EVENT_BUBBLE);
       lv_obj_set_style_bg_color(toggle, lv_palette_main(LV_PALETTE_AMBER),
                                 LV_PART_INDICATOR | LV_STATE_CHECKED);
       if (on) lv_obj_add_state(toggle, LV_STATE_CHECKED);
-      lv_obj_align(toggle, LV_ALIGN_BOTTOM_MID, 0, -6);
+      lv_obj_align(toggle, LV_ALIGN_BOTTOM_MID, 0, -8);
     }
 
     const String label = node["label"] | "?";
@@ -735,9 +738,9 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     lv_obj_set_width(name, cellW - 12);
     if (!big) {
       lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-      lv_obj_set_height(name, 2 * lv_font_get_line_height(&lv_font_montserrat_20));
+      lv_obj_set_height(name, (isSwitch ? 1 : 2) * lv_font_get_line_height(&lv_font_montserrat_20));
     }
-    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, top + 64 + (isSwitch ? 2 : 8));
+    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, isSwitch ? 64 : top + 64 + 8);
   }
   return g;
 }

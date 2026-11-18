@@ -71,6 +71,20 @@
           }
         },
         {
+          "id": "scene-high-night",
+          "type": "task",
+          "label": "High Night",
+          "icon": "icon_high_night",
+          "task": {
+            "payload": {
+              "taskId": "scene-high-night",
+              "tuyaScene": "high night mode"
+            },
+            "qos": 1,
+            "expectsResult": true
+          }
+        },
+        {
           "id": "scene-day",
           "type": "task",
           "label": "Day",

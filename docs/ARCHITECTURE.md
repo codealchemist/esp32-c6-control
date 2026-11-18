@@ -220,18 +220,31 @@ the burned-in default.
 }
 ```
 
-All commands publish to the single `mqtt.topics.commands` topic with a
-`taskId`-tagged JSON payload — one topic to subscribe/ACL per device rather
-than one per task, which keeps broker-side authorization simple (§8).
+**Topic directions** (aligned with the nodrige Core, which is the server
+end of every topic — revised from the original draft, which had `commands`
+and `messages` the other way round):
+
+| Topic            | Direction       | Carries                                                                 |
+| ---------------- | --------------- | ----------------------------------------------------------------------- |
+| `messages`       | device → server | Every device-originated event as a CoreEvent `{componentId, eventType, value, metadata}`: telemetry, and **task invocations** (`eventType: "task"`, §6.3) |
+| `commands`       | server → device | Every server-originated command `{action, value, correlationId, ...}`: e.g. `echo`, and **task replies** (`action: "task_result"`, §6.3) |
+| `commandResults` | device → server | Outcomes of what the server sent the device, e.g. config push results `{type: "config", status, errors}` (§5.3) |
+| `config`         | server → device | Retained config documents (§5.3)                                        |
+| `status`         | device → server | Presence/LWT (§8)                                                       |
+
+Each direction is one topic per device rather than one per task, which keeps
+broker-side authorization simple (§8): a device may publish only to
+`messages`, `commandResults` and `status`, and subscribe only to `commands`
+and `config`.
 
 QoS per topic (confirmed):
 
 | Topic            | QoS | Why                                                                 |
 | ----------------- | --- | -------------------------------------------------------------------- |
-| `commands`         | 1   | A dropped "lights on" is bad UX (§5.2)                               |
+| `messages`         | 1   | Carries task invocations: a dropped "lights on" is bad UX (§5.2)     |
+| `commands`         | 1   | Carries task replies — a result worth publishing is worth delivering |
 | `config`           | 1   | A dropped config push shouldn't silently fail to land                |
-| `commandResults`   | 1   | Matches `commands` — a result worth publishing is worth delivering   |
-| `messages`         | 1   | A dropped push message is a lost notification the user never sees    |
+| `commandResults`   | 1   | A config outcome the server never sees leaves it guessing            |
 | `status`           | 0   | Presence/LWT (§8) is inherently a "latest state wins" signal — the next publish supersedes a lost one, so at-most-once is fine |
 
 The MQTT **password** (or TLS client cert/key, if using mutual TLS) is
@@ -480,7 +493,13 @@ Encoder pushed on a task icon
   → else: send immediately
 AppController → net/task_publisher.send(task, paramValues)
   → builds { ...task.payload, ...paramValues, requestId } JSON
-  → net/mqtt_client.publish(commandsTopic, payload, qos)
+  → wraps it as a CoreEvent on mqtt.topics.messages:
+      { componentId: <node id>, eventType: "task", value: <requestId>,
+        metadata: { taskId, expectsResult, payload: <the JSON above> } }
+    (value = requestId so every invocation is a state *change* for the
+    server's State Engine — a repeated "lights on" would otherwise be
+    dropped as a heartbeat)
+  → net/mqtt_client.publish(messagesTopic, event, qos)
   → if MQTT not currently connected: drop it and show a UI error
     immediately (confirmed — no local command queue/replay: sending a
     stale "lights on" minutes later on reconnect would be worse than
@@ -489,11 +508,13 @@ AppController → net/task_publisher.send(task, paramValues)
     "sent" acknowledgment right away and return to NAVIGATE — no waiting,
     no correlation, no timeout logic engaged
   → if task.expectsResult is true: wait for a correlated reply (below)
-Backend executes the task and, only for expectsResult tasks, publishes a
-  reply to mqtt.topics.commandResults, keyed by requestId — its contents
-  are task-specific and the UI can act on them (e.g. show a returned
-  value/message), not just render a generic success/fail icon
-net/mqtt_client's subscription callback matches requestId → publishes
+Backend executes the task and, only for expectsResult tasks, sends a reply
+  command on mqtt.topics.commands:
+      { action: "task_result", correlationId: <requestId>,
+        result: { status: "ok" | "error", message, ...task-specific } }
+  — its contents are task-specific and the UI can act on them (e.g. show a
+  returned value/message), not just render a generic success/fail icon
+net/mqtt_client's subscription callback matches correlationId → publishes
   TaskResultEvent (success/failure/custom payload), or a short client-side
   timeout (e.g. 5s with no result) publishes a TaskResultEvent(timeout)
 ui shows a transient toast/status then returns to NAVIGATE
@@ -502,7 +523,9 @@ ui shows a transient toast/status then returns to NAVIGATE
 ### 6.4 Inbound message flow
 
 ```
-Server publishes to the device's mqtt.topics.messages topic
+Server sends a command on the device's mqtt.topics.commands topic:
+    { action: "message", text, icon?, id?, timestamp? }
+  (revised: `messages` is the device → server direction, §5.1)
   → net/mqtt_client's subscription callback fires with the raw payload
   → parses { text, icon?, id?, timestamp? }
   → storage/fs_store persists to a small on-disk queue (bounded, e.g. last 50)

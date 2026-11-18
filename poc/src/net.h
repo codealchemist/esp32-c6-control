@@ -38,20 +38,37 @@ MqttResult netConnectMqttAndTestEcho(const String &host, uint16_t port, bool use
 
 // --- Device application traffic (nodrige docs/00-poc-implementation-guide.md §0.6) ---
 
-// Subscribes to `commandsTopic` on the live client (re-subscribed
-// automatically after any reconnect) and records `messagesTopic` as the
-// telemetry destination. Requires a prior successful
-// netConnectMqttAndTestEcho().
-bool netMqttStartDeviceTopics(const String &commandsTopic, const String &messagesTopic);
+struct DeviceTopics {
+  String commands;        // subscribed: commands for this device
+  String messages;        // published: telemetry
+  String config;          // subscribed: config pushes (docs/ARCHITECTURE.md §5.3)
+  String commandResults;  // published: results, incl. config apply outcomes
+};
+
+// Subscribes to the commands and config topics on the live client
+// (re-subscribed automatically after any reconnect) and records the publish
+// topics. Requires a prior successful netConnectMqttAndTestEcho().
+bool netMqttStartDeviceTopics(const DeviceTopics &topics);
 
 // Publishes {"componentId","eventType","value"} — the wire shape the Core's
 // Connectivity Broker normalizes into a CoreEvent — to the messages topic.
 bool netMqttPublishTelemetry(const char *componentId, const char *eventType, int value);
 
-// Returns true (once) with the payload of the most recent message received
-// on the commands topic. Commands arriving faster than this is polled
-// collapse to the latest — fine for a POC display, not for a real inbox.
+// Pops the oldest message received on the commands topic (FIFO of 4; if it
+// overflows, the oldest are dropped).
 bool netMqttTakeCommand(String &payloadOut);
+
+// Publishes a JSON event (CoreEvent wire shape) to the messages topic —
+// telemetry and task invocations both travel this way (device -> Core).
+bool netMqttPublishEvent(const String &json, int qos = 1);
+
+// Returns true (once) with a complete config document received on the config
+// topic. Messages larger than one MQTT buffer arrive in fragments and are
+// reassembled first; documents over 8 KB are dropped (and logged).
+bool netMqttTakeConfig(String &payloadOut);
+
+// Publishes a JSON payload to the commandResults topic (QoS 1).
+bool netMqttPublishResult(const String &json);
 
 bool netMqttIsConnected();
 

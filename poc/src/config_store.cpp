@@ -4,6 +4,7 @@
 #include <LittleFS.h>
 
 #include <set>
+#include <vector>
 
 #include "generated/icon_registry_gen.h"
 
@@ -14,6 +15,10 @@ constexpr const char *kActivePath = "/config/active.json";
 constexpr const char *kStagedPath = "/config/staged.json";
 
 ConfigSummary gSummary;
+
+// The loaded config, kept for the menu to render. Replaced only by
+// configLoad(); a pushed config takes effect through a reboot (§5.3).
+JsonDocument gActive;
 
 bool readJson(const char *path, JsonDocument &doc) {
   File f = LittleFS.open(path, "r");
@@ -51,10 +56,13 @@ bool iconKnown(const char *id) {
 
 struct Validator {
   ConfigSummary &s;
+  bool printTree = true;
   std::set<String> ids;
+  std::vector<String> firstErrors;  // reported back to the server on a push
 
   void error(const String &where, const String &msg) {
     s.errors++;
+    if (firstErrors.size() < 5) firstErrors.push_back(where + ": " + msg);
     Serial.println("[Config] ERROR " + where + ": " + msg);
   }
   void warn(const String &where, const String &msg) {
@@ -160,7 +168,7 @@ struct Validator {
 
     String indent;
     for (int i = 0; i < depth; i++) indent += "  ";
-    Serial.printf("[Config] %s- [%s] %s \"%s\"%s\n", indent.c_str(), type.c_str(), id.c_str(),
+    if (printTree) Serial.printf("[Config] %s- [%s] %s \"%s\"%s\n", indent.c_str(), type.c_str(), id.c_str(),
                   label.c_str(), detail.isEmpty() ? "" : (" (" + detail + ")").c_str());
 
     if (type == "folder") {
@@ -224,6 +232,7 @@ ConfigSummary configLoad() {
   }
 
   gSummary.loaded = true;
+  gActive = doc;
   gSummary.configVersion = doc["configVersion"];
   Serial.printf("[Config] configVersion %d%s — menu:\n", gSummary.configVersion,
                 gSummary.fromDefault ? " (from default)" : "");
@@ -284,4 +293,73 @@ String configSummaryLine() {
                 String(gSummary.tasks + gSummary.folders + gSummary.actions) + " nodes";
   if (gSummary.errors) line += ", " + String(gSummary.errors) + " errors";
   return line;
+}
+
+PushResult configApplyPushed(const String &json, String &resultJson) {
+  JsonDocument result;
+  result["type"] = "config";
+
+  JsonDocument incoming;
+  const DeserializationError err = deserializeJson(incoming, json);
+  ConfigSummary probe;
+  Validator v{probe, /*printTree=*/false};
+  PushResult outcome = PushResult::Rejected;
+
+  if (err) {
+    result["errors"].add(String("invalid JSON: ") + err.c_str());
+  } else if (v.checkRoot(incoming)) {
+    for (JsonVariantConst n : incoming["menu"].as<JsonArrayConst>()) v.checkNode(n, "", 1);
+    if (probe.errors == 0) outcome = PushResult::Applied;
+  }
+  result["configVersion"] = incoming["configVersion"] | 0;
+  for (const String &e : v.firstErrors) result["errors"].add(e);
+
+  if (outcome == PushResult::Applied) {
+    JsonDocument active;
+    const bool haveActive = readJson(kActivePath, active);
+
+    // Unchanged? Compare only what a push may change. The broker keeps the
+    // config retained and redelivers it on every (re)connect, so without
+    // this the device would reboot on every connect.
+    String inMenu, curMenu;
+    serializeJson(incoming["menu"], inMenu);
+    if (haveActive) serializeJson(active["menu"], curMenu);
+    if (haveActive && inMenu == curMenu &&
+        (incoming["configVersion"] | 0) == (active["configVersion"] | 0)) {
+      outcome = PushResult::Unchanged;
+    } else {
+      // Connection settings come from provisioning, never from a push: a
+      // pushed broker host that turns out wrong would cut the device off for
+      // good, with no way to push the fix. Keep the local mqtt block.
+      if (haveActive && active["mqtt"].is<JsonObject>()) {
+        incoming["mqtt"] = active["mqtt"];
+      } else {
+        incoming.remove("mqtt");
+      }
+      if (!writeActive(incoming)) {
+        outcome = PushResult::Rejected;
+        result["errors"].add("could not write active.json");
+      }
+    }
+  }
+
+  result["status"] = outcome == PushResult::Applied     ? "applied"
+                     : outcome == PushResult::Unchanged ? "unchanged"
+                                                        : "rejected";
+  Serial.printf("[Config] push v%d: %s (%d error(s))\n", result["configVersion"].as<int>(),
+                result["status"].as<const char *>(), probe.errors);
+  resultJson = "";
+  serializeJson(result, resultJson);
+  return outcome;
+}
+
+JsonArrayConst configMenu() { return gActive["menu"].as<JsonArrayConst>(); }
+
+bool configRestoreDefault() {
+  // Removing active.json is enough: the next configLoad() recreates it from
+  // the default (§5.3 point 2), through the same validated path as first boot.
+  const bool ok = !LittleFS.exists(kActivePath) || LittleFS.remove(kActivePath);
+  Serial.println(ok ? "[Config] active.json removed — default restored on next boot"
+                    : "[Config] could not remove active.json");
+  return ok;
 }

@@ -18,3 +18,11 @@ bool touchRead(int16_t &x, int16_t &y);
 // Raw-report logging, toggled from the serial console ('t').
 void touchSetDebug(bool on);
 bool touchDebugEnabled();
+
+struct TouchStats {
+  bool ready;
+  uint32_t readsOk;
+  uint32_t readErrors;
+  uint32_t msSinceTouch;  // UINT32_MAX if never touched
+};
+TouchStats touchStats();

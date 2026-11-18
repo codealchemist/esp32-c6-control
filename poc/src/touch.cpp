@@ -34,6 +34,7 @@ uint8_t gLastRaw[6] = {0};
 uint32_t gReadErrors = 0;
 uint32_t gReadOk = 0;
 uint32_t gLastErrReportMs = 0;
+uint32_t gLastTouchMs = 0;  // last report with a finger down, for diagnostics
 
 volatile bool gIntFlag = false;
 bool gReady = false;
@@ -98,6 +99,7 @@ bool poll() {
     Serial.printf("[Touch] down x=%d y=%d (raw %d,%d)\n", x, y, rawX, rawY);
   }
   gPressed = true;
+  gLastTouchMs = millis();
   gX = x;
   gY = y;
   return true;
@@ -148,3 +150,12 @@ void touchSetDebug(bool on) {
 }
 
 bool touchDebugEnabled() { return gTouchDebug; }
+
+TouchStats touchStats() {
+  TouchStats st;
+  st.ready = gReady;
+  st.readsOk = gReadOk;
+  st.readErrors = gReadErrors;
+  st.msSinceTouch = gLastTouchMs ? millis() - gLastTouchMs : UINT32_MAX;
+  return st;
+}

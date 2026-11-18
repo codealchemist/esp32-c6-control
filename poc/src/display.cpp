@@ -175,4 +175,12 @@ void displayInit() {
 
 void displaySetBrightness(uint8_t level) { gLcd.setBrightness(level); }
 
-void displayTick() { lv_timer_handler(); }
+void displayTick() {
+  lv_timer_handler();
+  // Every wait loop in the app pumps the display through here, so this is
+  // where the loop watchdog is fed (enabled at the end of setup()). If the
+  // app task ever stops coming back here for 5s — a hang in LVGL, a
+  // deadlock — the task WDT panics and prints a backtrace instead of the
+  // screen silently freezing.
+  feedLoopWDT();
+}

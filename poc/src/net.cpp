@@ -112,15 +112,27 @@ String gEchoTopic;
 // concurrently in practice.
 String gCommandsTopic;
 String gMessagesTopic;
+String gConfigTopic;
+String gResultsTopic;
+
+// Config documents, reassembled from MQTT fragments in the MQTT task and
+// handed to the app task. Only the MQTT task touches the assembly buffer;
+// the hand-off pointer is swapped under gCmdMux.
+constexpr size_t kMaxConfigLen = 8192;
+char *gCfgAssembly = nullptr;
+size_t gCfgAssemblyLen = 0;
+char *gCfgReady = nullptr;  // complete, NUL-terminated, owned by whoever takes it
 
 // Latest command, handed from the MQTT task to the app task.
 // Fixed buffer, not a String: heap allocation is not allowed inside a
 // portENTER_CRITICAL section.
+// A small FIFO, not a single slot: a task reply and an echo can arrive back
+// to back, and a slot would silently keep only the last one.
 constexpr size_t kMaxCommandLen = 511;
+constexpr uint8_t kCmdQueueLen = 4;
 portMUX_TYPE gCmdMux = portMUX_INITIALIZER_UNLOCKED;
-char gPendingCommand[kMaxCommandLen + 1];
-size_t gPendingCommandLen = 0;
-volatile bool gCommandPending = false;
+char gCmdQueue[kCmdQueueLen][kMaxCommandLen + 1];
+uint8_t gCmdHead = 0, gCmdCount = 0;
 
 bool topicEquals(const esp_mqtt_event_handle_t event, const String &topic) {
   return topic.length() > 0 && event->topic_len == static_cast<int>(topic.length()) &&
@@ -139,6 +151,9 @@ void mqttEventHandler(void *handler_args, esp_event_base_t base, int32_t event_i
       if (gCommandsTopic.length() > 0) {
         esp_mqtt_client_subscribe(event->client, gCommandsTopic.c_str(), 1);
       }
+      if (gConfigTopic.length() > 0) {
+        esp_mqtt_client_subscribe(event->client, gConfigTopic.c_str(), 1);
+      }
       break;
     case MQTT_EVENT_DISCONNECTED:
       gMqttConnected = false;
@@ -146,22 +161,57 @@ void mqttEventHandler(void *handler_args, esp_event_base_t base, int32_t event_i
     case MQTT_EVENT_ERROR:
       gMqttError = true;
       break;
-    case MQTT_EVENT_DATA:
-      // Only whole, unfragmented messages: fragments after the first carry
-      // no topic. Commands are a few hundred bytes, far under the buffer.
-      if (event->topic_len == 0 || event->data_len != event->total_data_len) break;
+    case MQTT_EVENT_DATA: {
+      // A message larger than the client buffer arrives as several DATA
+      // events: only the first carries the topic; the rest carry
+      // current_data_offset > 0 and no topic.
+      const bool first = event->current_data_offset == 0;
+      if (first && topicEquals(event, gConfigTopic)) {
+        free(gCfgAssembly);
+        gCfgAssembly = nullptr;
+        if (event->total_data_len == 0) break;  // retained-message clear
+        if (static_cast<size_t>(event->total_data_len) > kMaxConfigLen) {
+          Serial.printf("[MQTT] config push of %d bytes exceeds %u — dropped\n",
+                        event->total_data_len, kMaxConfigLen);
+          break;
+        }
+        gCfgAssembly = static_cast<char *>(malloc(event->total_data_len + 1));
+        gCfgAssemblyLen = event->total_data_len;
+      }
+      if (gCfgAssembly && (first ? topicEquals(event, gConfigTopic) : true) &&
+          static_cast<size_t>(event->current_data_offset + event->data_len) <= gCfgAssemblyLen) {
+        memcpy(gCfgAssembly + event->current_data_offset, event->data, event->data_len);
+        if (static_cast<size_t>(event->current_data_offset + event->data_len) == gCfgAssemblyLen) {
+          gCfgAssembly[gCfgAssemblyLen] = '\0';
+          portENTER_CRITICAL(&gCmdMux);
+          char *old = gCfgReady;
+          gCfgReady = gCfgAssembly;
+          portEXIT_CRITICAL(&gCmdMux);
+          free(old);  // an unconsumed older push is superseded
+          gCfgAssembly = nullptr;
+        }
+        break;
+      }
+
+      // Everything else: only whole, unfragmented messages.
+      if (!first || event->topic_len == 0 || event->data_len != event->total_data_len) break;
       if (topicEquals(event, gEchoTopic)) {
         gMqttEchoReceived = true;
       } else if (topicEquals(event, gCommandsTopic)) {
         const size_t n = min(static_cast<size_t>(event->data_len), kMaxCommandLen);
         portENTER_CRITICAL(&gCmdMux);
-        memcpy(gPendingCommand, event->data, n);
-        gPendingCommand[n] = '\0';
-        gPendingCommandLen = n;
-        gCommandPending = true;
+        if (gCmdCount == kCmdQueueLen) {  // full: drop the oldest
+          gCmdHead = (gCmdHead + 1) % kCmdQueueLen;
+          gCmdCount--;
+        }
+        char *slot = gCmdQueue[(gCmdHead + gCmdCount) % kCmdQueueLen];
+        memcpy(slot, event->data, n);
+        slot[n] = '\0';
+        gCmdCount++;
         portEXIT_CRITICAL(&gCmdMux);
       }
       break;
+    }
     default:
       break;
   }
@@ -178,7 +228,15 @@ void netMqttStop() {
   gMqttConnected = false;
   gCommandsTopic = "";
   gMessagesTopic = "";
-  gCommandPending = false;
+  gConfigTopic = "";
+  gResultsTopic = "";
+  gCmdHead = 0;
+  gCmdCount = 0;
+  // The client (and its task) is gone, so nothing else touches these now.
+  free(gCfgAssembly);
+  gCfgAssembly = nullptr;
+  free(gCfgReady);
+  gCfgReady = nullptr;
 }
 
 MqttResult netConnectMqttAndTestEcho(const String &host, uint16_t port, bool useTls,
@@ -257,13 +315,16 @@ MqttResult netConnectMqttAndTestEcho(const String &host, uint16_t port, bool use
   return result;
 }
 
-bool netMqttStartDeviceTopics(const String &commandsTopic, const String &messagesTopic) {
-  if (!gClient || commandsTopic.length() == 0 || messagesTopic.length() == 0) return false;
-  gCommandsTopic = commandsTopic;
-  gMessagesTopic = messagesTopic;
+bool netMqttStartDeviceTopics(const DeviceTopics &t) {
+  if (!gClient || t.commands.length() == 0 || t.messages.length() == 0) return false;
+  gCommandsTopic = t.commands;
+  gMessagesTopic = t.messages;
+  gConfigTopic = t.config;
+  gResultsTopic = t.commandResults;
   // If currently disconnected, the CONNECTED handler subscribes on reconnect.
   if (gMqttConnected) {
-    return esp_mqtt_client_subscribe(gClient, gCommandsTopic.c_str(), 1) >= 0;
+    esp_mqtt_client_subscribe(gClient, gCommandsTopic.c_str(), 1);
+    if (gConfigTopic.length() > 0) esp_mqtt_client_subscribe(gClient, gConfigTopic.c_str(), 1);
   }
   return true;
 }
@@ -278,14 +339,39 @@ bool netMqttPublishTelemetry(const char *componentId, const char *eventType, int
 }
 
 bool netMqttTakeCommand(String &payloadOut) {
-  if (!gCommandPending) return false;
+  if (gCmdCount == 0) return false;
   char local[kMaxCommandLen + 1];
   portENTER_CRITICAL(&gCmdMux);
-  memcpy(local, gPendingCommand, gPendingCommandLen + 1);
-  gCommandPending = false;
+  memcpy(local, gCmdQueue[gCmdHead], sizeof(local));
+  gCmdHead = (gCmdHead + 1) % kCmdQueueLen;
+  gCmdCount--;
   portEXIT_CRITICAL(&gCmdMux);
   payloadOut = local;
   return true;
+}
+
+bool netMqttPublishEvent(const String &json, int qos) {
+  if (!gClient || !gMqttConnected || gMessagesTopic.length() == 0) return false;
+  return esp_mqtt_client_publish(gClient, gMessagesTopic.c_str(), json.c_str(), json.length(),
+                                 qos, false) >= 0;
+}
+
+bool netMqttTakeConfig(String &payloadOut) {
+  if (!gCfgReady) return false;
+  portENTER_CRITICAL(&gCmdMux);
+  char *doc = gCfgReady;
+  gCfgReady = nullptr;
+  portEXIT_CRITICAL(&gCmdMux);
+  if (!doc) return false;
+  payloadOut = doc;
+  free(doc);
+  return true;
+}
+
+bool netMqttPublishResult(const String &json) {
+  if (!gClient || !gMqttConnected || gResultsTopic.length() == 0) return false;
+  return esp_mqtt_client_publish(gClient, gResultsTopic.c_str(), json.c_str(), json.length(), 1,
+                                 false) >= 0;
 }
 
 bool netMqttIsConnected() { return gClient != nullptr && gMqttConnected; }

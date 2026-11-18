@@ -4,6 +4,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 
+#include <algorithm>
 #include <vector>
 
 #include <functional>
@@ -826,12 +827,17 @@ void runAction(JsonObjectConst node) {
 
 // --- Device details (home header tap) ------------------------------------------------
 //
-// Two cards under a back button: Connection (Wi-Fi, IP, signal, MQTT broker,
+// Full pages like the menu's: Connection (Wi-Fi, IP, signal, MQTT broker,
 // Core version — asked from the Core when the page opens) and Device (chip,
-// memory, uptime, battery, firmware build). Refreshed every second; back /
-// BOOT / any button closes, as does 30s without input.
+// memory, uptime, battery, firmware build). Swipe left/right (or turn the
+// encoder) to switch pages; back button, BOOT or swipe down closes; so does
+// 30s without input. Values refresh every second.
 
 constexpr uint32_t kDetailsIdleMs = 30000;
+constexpr int kDetailsPages = 2;
+constexpr int kDetailRows = 5;
+
+void onGesture(lv_event_t *);  // the menu's swipe handler (Navigation, below)
 
 // Battery: BAT_ADC on GPIO0 through a 200K/100K divider (VBAT = ADC x 3,
 // Waveshare schematic). There is no battery-present signal: with no battery
@@ -840,72 +846,105 @@ constexpr uint32_t kDetailsIdleMs = 30000;
 String batteryText() {
   const uint32_t mv = analogReadMilliVolts(0) * 3;
   const String v = String(mv / 1000.0f, 2) + " V";
-  if (mv < 2500) return "Battery: none";
-  if (mv >= 4150) return "Bat " + v + " full/none";
+  if (mv < 2500) return "none";
+  if (mv >= 4150) return v + " full/none";
   int pct = (int(mv) - 3300) * 100 / (4150 - 3300);
   pct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
-  return "Battery " + v + " " + String(pct) + "%";
+  return v + "  " + String(pct) + "%";
 }
 
 String uptimeText() {
   const uint32_t s = millis() / 1000;
   const uint32_t d = s / 86400, h = s / 3600 % 24, m = s / 60 % 60;
-  if (d) return "Up " + String(d) + "d " + String(h) + "h " + String(m) + "m";
-  if (h) return "Up " + String(h) + "h " + String(m) + "m";
-  return "Up " + String(m) + "m " + String(s % 60) + "s";
+  if (d) return String(d) + "d " + String(h) + "h " + String(m) + "m";
+  if (h) return String(h) + "h " + String(m) + "m";
+  return String(m) + "m " + String(s % 60) + "s";
 }
 
-struct InfoCard {
-  lv_obj_t *lines[6] = {};
+// One page: header (back + title + page dots) and kDetailRows label/value rows.
+struct DetailsPage {
+  lv_obj_t *values[kDetailRows] = {};
 };
 
-InfoCard makeInfoCard(lv_obj_t *scr, int32_t x, const char *title, int nLines) {
-  lv_obj_t *card = lv_obj_create(scr);
-  lv_obj_remove_style_all(card);
-  lv_obj_set_pos(card, x, 52);
-  lv_obj_set_size(card, 151, 116);
-  lv_obj_set_style_radius(card, 10, 0);
-  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(card, lv_color_hex(0x1C1C1C), 0);
-  lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+DetailsPage drawDetailsPage(int page, lv_screen_load_anim_t anim) {
+  static const char *kTitles[kDetailsPages] = {"Connection", "Device"};
+  static const char *kLabels[kDetailsPages][kDetailRows] = {
+      {"Wi-Fi", "IP", "Signal", "MQTT", "Core"},
+      {"Chip", "Memory", "Uptime", "Battery", "Firmware"}};
 
-  lv_obj_t *t = lv_label_create(card);
-  lv_label_set_text(t, title);
-  lv_obj_set_style_text_font(t, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(t, lv_palette_main(LV_PALETTE_GREY), 0);
-  lv_obj_set_pos(t, 8, 5);
+  lv_obj_t *scr = uiBlankScreen("device-details", anim);
+  lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);
+  makePageHeader(scr, kTitles[page]);
 
-  InfoCard c;
-  for (int i = 0; i < nLines; i++) {
-    lv_obj_t *l = lv_label_create(card);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
-    lv_obj_set_width(l, 151 - 14);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(l, 8, 24 + i * 18);
-    c.lines[i] = l;
+  for (int i = 0; i < kDetailsPages; i++) {  // page dots, top-right
+    lv_obj_t *d = lv_obj_create(scr);
+    lv_obj_remove_style_all(d);
+    lv_obj_set_size(d, 8, 8);
+    lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(d, i == page ? lv_color_white() : lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_set_pos(d, 320 - 14 - (kDetailsPages - i) * 16 + 8, 22);
   }
-  return c;
+
+  // Labels first, measured, so the value column starts past the widest one
+  // ("Firmware") with a clear gap, whatever the font renders it at.
+  lv_obj_t *labels[kDetailRows];
+  int32_t labelW = 0;
+  for (int i = 0; i < kDetailRows; i++) {
+    labels[i] = lv_label_create(scr);
+    lv_label_set_text(labels[i], kLabels[page][i]);
+    lv_obj_set_style_text_color(labels[i], lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_pos(labels[i], 12, 54 + i * 23);
+    lv_obj_update_layout(labels[i]);
+    labelW = std::max(labelW, lv_obj_get_width(labels[i]));
+  }
+  const int32_t valueX = 12 + labelW + 14;
+
+  DetailsPage p;
+  for (int i = 0; i < kDetailRows; i++) {
+    lv_obj_t *v = lv_label_create(scr);
+    lv_obj_set_width(v, 320 - valueX - 10);
+    lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(v, valueX, 54 + i * 23);
+    p.values[i] = v;
+  }
+  return p;
 }
 
-void setLine(lv_obj_t *l, const String &text, lv_color_t color = lv_color_white()) {
+void setValue(lv_obj_t *l, const String &text, lv_color_t color = lv_color_white()) {
   lv_label_set_text(l, text.c_str());
   lv_obj_set_style_text_color(l, color, 0);
 }
 
-void deviceDetailsScreen() {
-  lv_obj_t *scr = uiBlankScreen("device-details");
-  makePageHeader(scr, "Device details");
-  InfoCard net = makeInfoCard(scr, 6, "Connection", 5);
-  InfoCard dev = makeInfoCard(scr, 163, "Device", 5);
+void fillDetailsPage(int page, const DetailsPage &p, const String &coreText) {
+  const lv_color_t white = lv_color_white(), bad = lv_palette_main(LV_PALETTE_RED);
+  if (page == 0) {
+    const bool wifi = WiFi.status() == WL_CONNECTED;
+    const bool mqtt = netMqttIsConnected();
+    setValue(p.values[0], wifi ? WiFi.SSID() : String("not connected"), wifi ? white : bad);
+    setValue(p.values[1], wifi ? WiFi.localIP().toString() : String("-"));
+    setValue(p.values[2], wifi ? String(WiFi.RSSI()) + " dBm" : String("-"));
+    setValue(p.values[3], appBrokerHost().isEmpty() ? String("-") : appBrokerHost(),
+             mqtt ? lv_palette_main(LV_PALETTE_GREEN) : bad);
+    setValue(p.values[4], coreText, mqtt ? white : bad);
+  } else {
+    setValue(p.values[0], String(ESP.getChipModel()) + ", " + ESP.getCpuFreqMHz() + " MHz");
+    setValue(p.values[1], String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB, " +
+                              String(ESP.getFreeHeap() / 1024) + " KB free");
+    setValue(p.values[2], uptimeText());
+    setValue(p.values[3], batteryText());
+    setValue(p.values[4], __DATE__);
+  }
+}
 
-  // Static lines.
-  setLine(dev.lines[0], String(ESP.getChipModel()) + " " + ESP.getCpuFreqMHz() + " MHz");
-  setLine(dev.lines[4], String("FW ") + __DATE__);
+void deviceDetailsScreen() {
+  int page = 0;
+  DetailsPage p = drawDetailsPage(page, LV_SCREEN_LOAD_ANIM_NONE);
 
   // Ask the Core who it is.
-  String coreText = netMqttIsConnected() ? "Core: asking..." : "Core: offline";
+  String coreText = netMqttIsConnected() ? "asking..." : "offline";
   String coreRequest;
-  uint32_t coreAskedAt = millis();
+  const uint32_t coreAskedAt = millis();
   if (netMqttIsConnected()) {
     JsonDocument node, spec;
     node["id"] = "core-info";
@@ -915,7 +954,7 @@ void deviceDetailsScreen() {
     publishTask(node.as<JsonObjectConst>(), spec.as<JsonObjectConst>(), JsonObjectConst(), coreRequest);
   }
 
-  Serial.println("[Details] device details; back or 'b' closes");
+  Serial.println("[Details] swipe or +/- for pages; back, swipe down or 'b' closes");
   uint32_t lastRefresh = 0;
   while (true) {
     appPump();
@@ -925,36 +964,31 @@ void deviceDetailsScreen() {
       coreRequest = "";
       JsonDocument r;
       deserializeJson(r, reply);
-      coreText = String("Core v") + (r["result"]["version"] | "?");
+      coreText = String("v") + (r["result"]["version"] | "?");
       lastRefresh = 0;
-      Serial.printf("[Details] %s | %s | %s | %s\n", coreText.c_str(),
-                    batteryText().c_str(), uptimeText().c_str(),
-                    (String(ESP.getChipModel()) + " " + ESP.getCpuFreqMHz() + " MHz").c_str());
+      Serial.printf("[Details] Core %s | battery %s | up %s\n", coreText.c_str(),
+                    batteryText().c_str(), uptimeText().c_str());
     } else if (!coreRequest.isEmpty() && millis() - coreAskedAt > kResultTimeoutMs) {
       coreRequest = "";
-      coreText = "Core: no reply";
+      coreText = "no reply";
       lastRefresh = 0;
     }
 
     if (lastRefresh == 0 || millis() - lastRefresh >= 1000) {
       lastRefresh = millis();
-      const bool wifi = WiFi.status() == WL_CONNECTED;
-      const bool mqtt = netMqttIsConnected();
-      const lv_color_t ok = lv_palette_main(LV_PALETTE_GREEN), bad = lv_palette_main(LV_PALETTE_RED);
-      setLine(net.lines[0], wifi ? WiFi.SSID() : String("Wi-Fi: off"), wifi ? lv_color_white() : bad);
-      setLine(net.lines[1], wifi ? WiFi.localIP().toString() : String("-"));
-      setLine(net.lines[2], wifi ? "Signal " + String(WiFi.RSSI()) + " dBm" : String("-"));
-      setLine(net.lines[3], "MQTT " + (appBrokerHost().isEmpty() ? String("-") : appBrokerHost()),
-              mqtt ? ok : bad);
-      setLine(net.lines[4], coreText, mqtt ? lv_color_white() : bad);
-
-      setLine(dev.lines[1], String(ESP.getFlashChipSize() / (1024 * 1024)) + " MB, " +
-                                String(ESP.getFreeHeap() / 1024) + " KB free");
-      setLine(dev.lines[2], uptimeText());
-      setLine(dev.lines[3], batteryText());
+      fillDetailsPage(page, p, coreText);
     }
 
-    if (inputPoll() != InputEvent::None) return;  // back button / BOOT
+    const InputEvent ev = inputPoll();
+    if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
+      const bool fwd = ev == InputEvent::EncoderCW;
+      page = (page + (fwd ? 1 : kDetailsPages - 1)) % kDetailsPages;
+      p = drawDetailsPage(page, fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT);
+      lastRefresh = 0;
+      Serial.printf("[Details] page %d/%d\n", page + 1, kDetailsPages);
+    } else if (ev != InputEvent::None) {
+      return;  // back button / BOOT / swipe down
+    }
     if (lv_display_get_inactive_time(nullptr) >= kDetailsIdleMs) return;
     delay(5);
   }

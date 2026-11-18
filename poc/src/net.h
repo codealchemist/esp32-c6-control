@@ -43,7 +43,13 @@ struct DeviceTopics {
   String messages;        // published: task invocations (CoreEvents)
   String config;          // subscribed: config pushes (docs/ARCHITECTURE.md §5.3)
   String commandResults;  // published: results, incl. config apply outcomes
+  String status;          // published, retained: {"state":"online",...}; last will "offline"
 };
+
+// Extra JSON fields for the retained "online" status message, without
+// braces, e.g. "\"fw\":\"Nov 18 2026\",\"configVersion\":21". Set before
+// netMqttBegin(); sent on every (re)connect.
+void netMqttSetStatusInfo(const String &jsonFields);
 
 // Subscribes to the commands and config topics on the live client
 // (re-subscribed automatically after any reconnect) and records the publish

@@ -522,6 +522,9 @@ void loop() {
     topics.messages = mqttCfg.topicMessages;
     topics.config = mqttCfg.topicConfig;
     topics.commandResults = mqttCfg.topicCommandResults;
+    topics.status = mqttCfg.topicStatus;
+    netMqttSetStatusInfo(String("\"fw\":\"") + __DATE__ + " " + __TIME__ + "\",\"configVersion\":" +
+                         String(configActiveVersion()));
     if (!netMqttBegin(mqttCfg.brokerHost, mqttCfg.brokerPort, mqttCfg.useTls, mqttCfg.clientId,
                       mqttCfg.username, mqttCfg.password, topics)) {
       Serial.println("[MQTT] stored config unusable (no host or topics) - staying offline");

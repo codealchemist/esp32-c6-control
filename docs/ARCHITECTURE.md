@@ -230,7 +230,7 @@ and `messages` the other way round):
 | `commands`       | server → device | Every server-originated command `{action, value, correlationId, ...}`: e.g. `echo`, and **task replies** (`action: "task_result"`, §6.3) |
 | `commandResults` | device → server | Outcomes of what the server sent the device, e.g. config push results `{type: "config", status, errors}` (§5.3) |
 | `config`         | server → device | Retained config documents (§5.3)                                        |
-| `status`         | device → server | Presence/LWT (§8)                                                       |
+| `status`         | device → server | Presence: retained `{"state":"online", ip, fw, configVersion}` on every connect; last will `{"state":"offline"}` (retained). Read by the Core's device registry and the web console |
 
 Each direction is one topic per device rather than one per task, which keeps
 broker-side authorization simple (§8): a device may publish only to
@@ -245,7 +245,7 @@ QoS per topic (confirmed):
 | `commands`         | 1   | Carries task replies — a result worth publishing is worth delivering |
 | `config`           | 1   | A dropped config push shouldn't silently fail to land                |
 | `commandResults`   | 1   | A config outcome the server never sees leaves it guessing            |
-| `status`           | 0   | Presence/LWT (§8) is inherently a "latest state wins" signal — the next publish supersedes a lost one, so at-most-once is fine |
+| `status`           | 1, retained | Presence must be there for whoever subscribes later (the web console); the broker's last will replaces it with `offline` |
 
 The MQTT **password** (or TLS client cert/key, if using mutual TLS) is
 provisioned to NVS separately, never stored in the JSON config alongside

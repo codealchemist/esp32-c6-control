@@ -332,6 +332,8 @@ void configSyncMqtt(const MqttProvisionedConfig &m) {
   }
 }
 
+int configActiveVersion() { return gSummary.loaded ? gSummary.configVersion : 0; }
+
 String configSummaryLine() {
   if (!gSummary.loaded) return "Config: not loaded";
   String line = "Config: v" + String(gSummary.configVersion) + ", " +

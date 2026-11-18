@@ -54,3 +54,6 @@ bool configRestoreDefault();
 
 // One-line summary for the Device Info screen.
 String configSummaryLine();
+
+// configVersion of the active config (0 before configLoad()).
+int configActiveVersion();

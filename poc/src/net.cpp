@@ -114,6 +114,8 @@ String gCommandsTopic;
 String gMessagesTopic;
 String gConfigTopic;
 String gResultsTopic;
+String gStatusTopic;
+String gStatusInfo;  // extra fields for the "online" message
 
 // Config documents, reassembled from MQTT fragments in the MQTT task and
 // handed to the app task. Only the MQTT task touches the assembly buffer;
@@ -156,6 +158,15 @@ void mqttEventHandler(void *handler_args, esp_event_base_t base, int32_t event_i
       }
       if (gConfigTopic.length() > 0) {
         esp_mqtt_client_subscribe(event->client, gConfigTopic.c_str(), 1);
+      }
+      // Presence: retained, so anyone subscribing later (the web console)
+      // sees it at once; the broker replaces it with the last will
+      // ("offline") if this connection drops.
+      if (gStatusTopic.length() > 0) {
+        String online = "{\"state\":\"online\",\"ip\":\"" + WiFi.localIP().toString() + "\"";
+        if (gStatusInfo.length() > 0) online += "," + gStatusInfo;
+        online += "}";
+        esp_mqtt_client_publish(event->client, gStatusTopic.c_str(), online.c_str(), 0, 1, 1);
       }
       break;
     case MQTT_EVENT_DISCONNECTED:
@@ -339,6 +350,7 @@ bool netMqttBegin(const String &host, uint16_t port, bool useTls, const String &
   gMessagesTopic = t.messages;
   gConfigTopic = t.config;
   gResultsTopic = t.commandResults;
+  gStatusTopic = t.status;
 
   const String uri = String(useTls ? "mqtts://" : "mqtt://") + host + ":" + String(port);
   esp_mqtt_client_config_t cfg = {};
@@ -356,6 +368,14 @@ bool netMqttBegin(const String &host, uint16_t port, bool useTls, const String &
   cfg.network.reconnect_timeout_ms = 5000;
   // Whole commands in one DATA event (only config pushes are reassembled).
   cfg.buffer.size = 2048;
+  // Last will: the broker publishes this (retained) if we vanish.
+  static const char *kOffline = "{\"state\":\"offline\"}";
+  if (gStatusTopic.length() > 0) {
+    cfg.session.last_will.topic = gStatusTopic.c_str();
+    cfg.session.last_will.msg = kOffline;
+    cfg.session.last_will.qos = 1;
+    cfg.session.last_will.retain = 1;
+  }
 
   esp_mqtt_client_handle_t client = esp_mqtt_client_init(&cfg);
   if (!client) return false;
@@ -400,6 +420,8 @@ void netWifiPoll() {
 }
 
 bool netWifiConnected() { return WiFi.status() == WL_CONNECTED; }
+
+void netMqttSetStatusInfo(const String &jsonFields) { gStatusInfo = jsonFields; }
 
 bool netMqttStartDeviceTopics(const DeviceTopics &t) {
   if (!gClient || t.commands.length() == 0 || t.messages.length() == 0) return false;

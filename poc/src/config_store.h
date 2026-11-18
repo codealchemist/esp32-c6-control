@@ -19,7 +19,7 @@ struct ConfigSummary {
   bool loaded = false;
   bool fromDefault = false;  // active.json was (re)created from the default
   int configVersion = 0;
-  int tasks = 0, folders = 0, actions = 0, params = 0;
+  int tasks = 0, switches = 0, folders = 0, actions = 0, params = 0;
   int errors = 0;
   int warnings = 0;  // e.g. icon ids with no baked-in artwork yet
 };

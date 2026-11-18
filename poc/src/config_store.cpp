@@ -146,6 +146,27 @@ struct Validator {
       }
       detail = "qos " + String(qos) + (t["expectsResult"] | false ? ", expects result" : "") +
                (nParams ? ", " + String(nParams) + " param(s)" : "");
+    } else if (type == "switch") {
+      // Two-state button (§5.2): each tap flips on/off and publishes it as a
+      // task, with `payload` + the new state's own object (`on` / `off`).
+      s.switches++;
+      JsonVariantConst w = n["switch"];
+      if (!w["payload"].is<JsonObjectConst>()) error(where, "switch.payload must be an object");
+      for (const char *k : {"on", "off"}) {
+        if (!w[k].isNull() && !w[k].is<JsonObjectConst>()) {
+          error(where, String("switch.") + k + " must be an object");
+        }
+      }
+      const int qos = w["qos"] | 1;
+      if (qos < 0 || qos > 2) error(where, "switch.qos must be 0, 1 or 2");
+      if (!w["expectsResult"].isNull() && !w["expectsResult"].is<bool>()) {
+        error(where, "switch.expectsResult must be a bool");
+      }
+      if (!w["default"].isNull() && !w["default"].is<bool>()) {
+        error(where, "switch.default must be a bool");
+      }
+      detail = "qos " + String(qos) + (w["expectsResult"] | false ? ", expects result" : "") +
+               ", default " + (w["default"] | false ? "on" : "off");
     } else if (type == "folder") {
       s.folders++;
       const String binding = n["binding"] | "";
@@ -239,9 +260,9 @@ ConfigSummary configLoad() {
                 gSummary.fromDefault ? " (from default)" : "");
   Validator v{gSummary};
   for (JsonVariantConst n : doc["menu"].as<JsonArrayConst>()) v.checkNode(n, "", 1);
-  Serial.printf("[Config] %d task(s), %d folder(s), %d action(s), %d param(s); %d error(s), "
-                "%d warning(s)\n",
-                gSummary.tasks, gSummary.folders, gSummary.actions, gSummary.params,
+  Serial.printf("[Config] %d task(s), %d switch(es), %d folder(s), %d action(s), %d param(s); "
+                "%d error(s), %d warning(s)\n",
+                gSummary.tasks, gSummary.switches, gSummary.folders, gSummary.actions, gSummary.params,
                 gSummary.errors, gSummary.warnings);
   return gSummary;
 }
@@ -291,7 +312,7 @@ void configSyncMqtt(const MqttProvisionedConfig &m) {
 String configSummaryLine() {
   if (!gSummary.loaded) return "Config: not loaded";
   String line = "Config: v" + String(gSummary.configVersion) + ", " +
-                String(gSummary.tasks + gSummary.folders + gSummary.actions) + " nodes";
+                String(gSummary.tasks + gSummary.switches + gSummary.folders + gSummary.actions) + " nodes";
   if (gSummary.errors) line += ", " + String(gSummary.errors) + " errors";
   return line;
 }

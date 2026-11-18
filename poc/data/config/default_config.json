@@ -16,17 +16,23 @@
   },
   "menu": [
     {
-      "id": "lights-on",
-      "type": "task",
-      "label": "Lights On",
+      "id": "lights",
+      "type": "switch",
+      "label": "Lights",
       "icon": "icon_light_on",
-      "task": {
+      "switch": {
         "payload": {
-          "taskId": "lights-on",
-          "state": "on"
+          "taskId": "lights"
         },
         "qos": 1,
-        "params": []
+        "expectsResult": true,
+        "default": false,
+        "on": {
+          "tuyaScene": "Turn On"
+        },
+        "off": {
+          "tuyaScene": "Turn Off"
+        }
       }
     },
     {

@@ -269,6 +269,24 @@ provisioned to NVS separately, never stored in the JSON config alongside
   contents (§6.3); `false` (the default) means fire-and-forget — the
   device shows a local "sent" acknowledgment immediately and never waits
   or times out.
+- **`switch`** — leaf with two states, on and off, shown as a toggle on its
+  menu item (icon lit when on). Each tap flips it and publishes a task
+  exactly like `task` does (§6.3), with `switch.payload` plus
+  `state: "on" | "off"` plus that state's own optional object, so each state
+  can carry different data:
+
+  ```json
+  { "id": "lights", "type": "switch", "label": "Lights", "icon": "icon_light_on",
+    "switch": { "payload": { "taskId": "lights" }, "qos": 1, "expectsResult": true,
+                "default": false,
+                "on":  { "tuyaScene": "Turn On" },
+                "off": { "tuyaScene": "Turn Off" } } }
+  ```
+
+  The state is the panel's own: kept in NVS across reboots, starting at
+  `default`, and shown immediately on tap. With `expectsResult`, an error
+  reply or no reply within 5s flips it back and says why. (The Core does not
+  yet push state changes made elsewhere, e.g. from the Smart Life app.)
 - **`folder`** — has `children`, another array of nodes, rendered as its own
   carousel level when entered. Supports arbitrary nesting depth.
 - **`folder` with `binding`** — instead of static `children`, the folder's

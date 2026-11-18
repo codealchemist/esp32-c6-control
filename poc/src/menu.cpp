@@ -1,6 +1,7 @@
 #include "menu.h"
 
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
 #include <functional>
 
@@ -59,6 +60,7 @@ const char *nodeSymbol(JsonObjectConst n) {
   if (type == "folder") {
     return String(n["binding"] | "") == "message_inbox" ? LV_SYMBOL_ENVELOPE : LV_SYMBOL_DIRECTORY;
   }
+  if (type == "switch") return LV_SYMBOL_POWER;
   if (type == "action") {
     return String(n["action"] | "") == "phoneVolume" ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_SETTINGS;
   }
@@ -110,6 +112,35 @@ bool collectParams(JsonObjectConst node, JsonObject out) {
   return true;
 }
 
+// Publishes a task invocation (§6.3) — for `task` nodes and for `switch`
+// nodes alike: `spec` is the node's task/switch object, `extra` is merged
+// over spec.payload (params, or the switch's new state). CoreEvent wire shape
+// on the messages topic: `value` is the requestId so every invocation is a
+// state *change* for the Core's State Engine (a repeated "Lights On" would
+// otherwise be dropped as a heartbeat); the task travels in `metadata`.
+bool publishTask(JsonObjectConst node, JsonObjectConst spec, JsonObjectConst extra,
+                 String &requestId) {
+  const char *id = node["id"] | "?";
+  requestId = newRequestId();
+  JsonDocument ev;
+  ev["componentId"] = id;
+  ev["eventType"] = "task";
+  ev["value"] = requestId;
+  JsonObject meta = ev["metadata"].to<JsonObject>();
+  meta["taskId"] = spec["payload"]["taskId"] | id;
+  meta["expectsResult"] = spec["expectsResult"] | false;
+  JsonObject payload = meta["payload"].to<JsonObject>();
+  for (JsonPairConst kv : spec["payload"].as<JsonObjectConst>()) payload[kv.key()] = kv.value();
+  for (JsonPairConst kv : extra) payload[kv.key()] = kv.value();
+  payload["requestId"] = requestId;
+
+  String json;
+  serializeJson(ev, json);
+  const bool sent = netMqttPublishEvent(json, spec["qos"] | 1);
+  Serial.println("[Task] " + String(sent ? "sent " : "NOT sent ") + json);
+  return sent;
+}
+
 void runTask(JsonObjectConst node) {
   const char *id = node["id"] | "?";
   const char *label = node["label"] | id;
@@ -126,29 +157,9 @@ void runTask(JsonObjectConst node) {
     return;
   }
 
-  // CoreEvent wire shape on the messages topic. `value` is the requestId so
-  // every invocation is a state *change* for the Core's State Engine (a
-  // repeated "Lights On" would otherwise be dropped as a heartbeat); the task
-  // itself travels in `metadata`.
-  const String requestId = newRequestId();
+  String requestId;
   const bool expectsResult = task["expectsResult"] | false;
-  JsonDocument ev;
-  ev["componentId"] = id;
-  ev["eventType"] = "task";
-  ev["value"] = requestId;
-  JsonObject meta = ev["metadata"].to<JsonObject>();
-  meta["taskId"] = task["payload"]["taskId"] | id;
-  meta["expectsResult"] = expectsResult;
-  JsonObject payload = meta["payload"].to<JsonObject>();
-  for (JsonPairConst kv : task["payload"].as<JsonObjectConst>()) payload[kv.key()] = kv.value();
-  for (JsonPairConst kv : params.as<JsonObjectConst>()) payload[kv.key()] = kv.value();
-  payload["requestId"] = requestId;
-
-  String json;
-  serializeJson(ev, json);
-  const bool sent = netMqttPublishEvent(json, task["qos"] | 1);
-  Serial.println("[Task] " + String(sent ? "sent " : "NOT sent ") + json);
-  if (!sent) {
+  if (!publishTask(node, task, params.as<JsonObjectConst>(), requestId)) {
     notice("task-failed", String(label) + "\nNot sent", LV_SYMBOL_CLOSE,
            lv_palette_main(LV_PALETTE_RED));
     return;
@@ -184,6 +195,99 @@ void runTask(JsonObjectConst node) {
   Serial.println("[Task] " + requestId + " result: " + message);
   notice("task-result", String(label) + "\n" + message, ok ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE,
          lv_palette_main(ok ? LV_PALETTE_GREEN : LV_PALETTE_RED));
+}
+
+// --- Switches (§5.2 `switch`) ------------------------------------------------------
+//
+// A two-state button: each tap flips it and publishes the new state as a
+// task — `payload` + `state: "on"|"off"` + that state's own object (`on` /
+// `off` in the config, e.g. a different Tuya scene per state). The state is
+// the panel's own (kept in NVS across reboots) and shown right away; with
+// expectsResult, a failed or missing reply flips it back.
+
+constexpr uint32_t kSwitchReplyMs = 5000;
+
+String switchKey(const char *id) { return String(id).substring(0, 15); }  // NVS key limit
+
+bool switchState(JsonObjectConst node) {
+  Preferences p;
+  p.begin("switches", true);
+  const bool on = p.getBool(switchKey(node["id"] | "?").c_str(), node["switch"]["default"] | false);
+  p.end();
+  return on;
+}
+
+void setSwitchState(const char *id, bool on) {
+  Preferences p;
+  p.begin("switches", false);
+  p.putBool(switchKey(id).c_str(), on);
+  p.end();
+}
+
+struct PendingSwitch {
+  bool active = false;
+  String requestId, id, label;
+  bool previous = false;
+  uint32_t deadline = 0;
+} gPendingSwitch;
+
+void toggleSwitch(JsonObjectConst node) {
+  const char *id = node["id"] | "?";
+  const String label = node["label"] | id;
+  JsonObjectConst spec = node["switch"];
+  if (gPendingSwitch.active) {
+    Serial.printf("[Switch] %s: still waiting for the last reply — ignored\n", gPendingSwitch.id.c_str());
+    return;
+  }
+  if (!netMqttIsConnected()) {
+    notice("switch-offline", label + "\nNot switched: offline", LV_SYMBOL_CLOSE,
+           lv_palette_main(LV_PALETTE_RED));
+    return;
+  }
+  const bool was = switchState(node);
+  const bool on = !was;
+  JsonDocument extra;
+  extra["state"] = on ? "on" : "off";
+  for (JsonPairConst kv : spec[on ? "on" : "off"].as<JsonObjectConst>()) extra[kv.key()] = kv.value();
+
+  String requestId;
+  if (!publishTask(node, spec, extra.as<JsonObjectConst>(), requestId)) {
+    notice("switch-failed", label + "\nNot sent", LV_SYMBOL_CLOSE, lv_palette_main(LV_PALETTE_RED));
+    return;
+  }
+  setSwitchState(id, on);
+  Serial.printf("[Switch] %s -> %s\n", id, on ? "on" : "off");
+  if (spec["expectsResult"] | false) {
+    gPendingSwitch = {true, requestId, id, label, was, millis() + kSwitchReplyMs};
+  }
+}
+
+// Called from the menu loop. True if the screen must be redrawn (a reply
+// undid the switch).
+bool pollSwitchReply() {
+  if (!gPendingSwitch.active) return false;
+  PendingSwitch &p = gPendingSwitch;
+  String resultJson;
+  String message;
+  if (appTakeTaskResult(p.requestId, resultJson)) {
+    JsonDocument r;
+    deserializeJson(r, resultJson);
+    const bool ok = String(r["result"]["status"] | "ok") == "ok";
+    message = r["result"]["message"] | (ok ? "Done" : "Failed");
+    Serial.println("[Switch] " + p.id + " reply: " + message);
+    p.active = false;
+    if (ok) return false;
+  } else if ((int32_t)(millis() - p.deadline) >= 0) {
+    Serial.println("[Switch] " + p.id + ": no reply within 5s — switched back");
+    message = "No reply (timeout)";
+    p.active = false;
+  } else {
+    return false;
+  }
+  setSwitchState(p.id.c_str(), p.previous);
+  notice("switch-error", p.label + "\n" + message, LV_SYMBOL_WARNING,
+         lv_palette_main(LV_PALETTE_AMBER));
+  return true;
 }
 
 // --- Phone volume (local action "phoneVolume") ----------------------------------
@@ -458,6 +562,15 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     lv_obj_add_event_cb(cell, onCellClicked, LV_EVENT_CLICKED,
                         reinterpret_cast<void *>(static_cast<intptr_t>(idx)));
 
+    // Switches: icon lit amber when on, dimmed when off, a toggle under the
+    // label; everything sits 4px higher to make room for it.
+    const bool isSwitch = String(node["type"] | "") == "switch";
+    const bool on = isSwitch && switchState(node);
+    const int32_t top = isSwitch ? 8 : 12;
+    const lv_color_t iconColor = !isSwitch ? lv_color_white()
+                                 : on      ? lv_palette_main(LV_PALETTE_AMBER)
+                                           : lv_palette_darken(LV_PALETTE_GREY, 1);
+
     // Config icon artwork (64px, §12) when it exists, else a 48px symbol in
     // the same 64px slot so labels line up across cells.
     const lv_image_dsc_t *art = iconImage(node["icon"] | "");
@@ -465,13 +578,29 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     if (art) {
       icon = lv_image_create(cell);
       lv_image_set_src(icon, art);
-      lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 12);
+      if (isSwitch) {
+        lv_obj_set_style_image_recolor(icon, iconColor, 0);
+        lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+      }
+      lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, top);
     } else {
       icon = lv_label_create(cell);
       lv_label_set_text(icon, nodeSymbol(node));
       lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
-      lv_obj_set_style_text_color(icon, lv_color_white(), 0);
-      lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 18);
+      lv_obj_set_style_text_color(icon, iconColor, 0);
+      lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, top + 6);
+    }
+
+    if (isSwitch) {
+      // Display only: taps land on the cell, which toggles it.
+      lv_obj_t *toggle = lv_switch_create(cell);
+      lv_obj_set_size(toggle, 52, 26);
+      lv_obj_remove_flag(toggle, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_flag(toggle, LV_OBJ_FLAG_EVENT_BUBBLE);
+      lv_obj_set_style_bg_color(toggle, lv_palette_main(LV_PALETTE_AMBER),
+                                LV_PART_INDICATOR | LV_STATE_CHECKED);
+      if (on) lv_obj_add_state(toggle, LV_STATE_CHECKED);
+      lv_obj_align(toggle, LV_ALIGN_BOTTOM_MID, 0, -6);
     }
 
     const String label = node["label"] | "?";
@@ -486,7 +615,7 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
       lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
       lv_obj_set_height(name, 2 * lv_font_get_line_height(&lv_font_montserrat_20));
     }
-    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 12 + 64 + 8);
+    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, top + 64 + (isSwitch ? 2 : 8));
   }
   return g;
 }
@@ -518,6 +647,7 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root,
     while (ev == InputEvent::None) {
       appPump();
       ev = inputPoll();
+      if (ev == InputEvent::None && pollSwitchReply()) break;  // undone: redraw
       if (root && g.status && netMqttIsConnected() != wasOnline) {
         wasOnline = !wasOnline;
         lv_label_set_text(g.status, (String(LV_SYMBOL_WIFI "  ") + connectionText()).c_str());
@@ -586,6 +716,8 @@ void openNode(JsonObjectConst node, const String &path) {
   Serial.println("[Menu] open " + String(node["id"] | "?") + " (" + type + ")");
   if (type == "task") {
     runTask(node);
+  } else if (type == "switch") {
+    toggleSwitch(node);
   } else if (type == "action") {
     runAction(node);
   } else if (type == "folder") {

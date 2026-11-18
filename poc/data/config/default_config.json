@@ -119,6 +119,12 @@
           "action": "screenOff"
         },
         {
+          "id": "switch-sync",
+          "type": "action",
+          "label": "Switch sync",
+          "action": "switchSync"
+        },
+        {
           "id": "reprovision",
           "type": "action",
           "label": "Reset Wi-Fi/MQTT",

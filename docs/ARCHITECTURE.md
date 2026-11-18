@@ -306,10 +306,13 @@ provisioned to NVS separately, never stored in the JSON config alongside
                 "off": { "tuyaScene": "Turn Off" } } }
   ```
 
-  The state is the panel's own: kept in NVS across reboots, starting at
-  `default`, and shown immediately on tap. With `expectsResult`, an error
-  reply or no reply within 5s flips it back and says why. (The Core does not
-  yet push state changes made elsewhere, e.g. from the Smart Life app.)
+  The state is kept in NVS across reboots, starting at `default`, and shown
+  immediately on tap. With `expectsResult`, an error reply or no reply within
+  5s flips it back and says why. To catch changes made elsewhere (the Smart
+  Life app, a wall switch), the panel asks the Core for the real state
+  (`switch-state` task with the `on` object's `tuyaScene`; the Core reports
+  "on" if any light that scene acts on is on) at boot and on screen wake, at
+  most once per the "Switch sync" setting (default 10 min; Never = boot only).
 - **`folder`** — has `children`, another array of nodes, rendered as its own
   carousel level when entered. Supports arbitrary nesting depth.
 - **`folder` with `binding`** — instead of static `children`, the folder's

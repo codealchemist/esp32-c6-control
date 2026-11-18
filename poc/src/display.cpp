@@ -168,6 +168,7 @@ bool simRead(int16_t &x, int16_t &y) {
 uint32_t gAutoDimMs = 0;  // 0 = never
 uint32_t gAutoOffMs = 0;  // 0 = never
 enum class Screen { On, Dimmed, Off } gScreen = Screen::On;
+uint32_t gWakeCount = 0;
 bool gSwallowTouch = false;
 
 void lvglTouchReadCb(lv_indev_t *, lv_indev_data_t *data) {
@@ -239,9 +240,12 @@ bool displayNoteActivity() {
   }
   gScreen = Screen::On;
   gLcd.setBrightness(kBrightnessNormal);
+  gWakeCount++;
   Serial.println("[Display] wake");
   return true;
 }
+
+uint32_t displayWakeCount() { return gWakeCount; }
 
 bool displayIsDimmed() { return gScreen != Screen::On; }
 

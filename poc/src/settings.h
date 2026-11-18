@@ -22,3 +22,9 @@ constexpr uint8_t kVolumeTargetPhone = 0;
 constexpr uint8_t kVolumeTargetComputer = 1;
 uint8_t settingsVolumeTarget();
 void settingsSetVolumeTarget(uint8_t target);
+
+// Switch tiles re-read their real state (e.g. the lights behind them) at boot
+// and on screen wake, at most once per this many seconds; 0 = boot only.
+constexpr uint32_t kDefaultSwitchSyncSec = 600;
+uint32_t settingsSwitchSyncSec();
+void settingsSetSwitchSyncSec(uint32_t seconds);

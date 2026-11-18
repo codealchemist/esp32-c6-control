@@ -32,6 +32,10 @@ void displaySetAutoOff(uint32_t seconds);
 // that input, so a wake press does nothing else. Touch is handled inside.
 bool displayNoteActivity();
 
+// Counts wakes from dimmed/off, so a screen loop can notice "the user is
+// back" and refresh what may have changed meanwhile.
+uint32_t displayWakeCount();
+
 // True while dimmed or off.
 bool displayIsDimmed();
 

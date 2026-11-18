@@ -181,7 +181,7 @@ struct Validator {
       const String action = n["action"] | "";
       if (action != "reprovision" && action != "restoreDefaultConfig" && action != "showAbout" &&
           action != "volume" && action != "phoneVolume" && action != "screenDim" &&
-          action != "screenOff") {
+          action != "screenOff" && action != "switchSync") {
         error(where, "unknown action '" + action + "'");
       }
       detail = "action " + action;

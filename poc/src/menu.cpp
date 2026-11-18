@@ -72,6 +72,7 @@ const char *nodeSymbol(JsonObjectConst n) {
     if (a == "volume" || a == "phoneVolume") return LV_SYMBOL_VOLUME_MAX;
     if (a == "screenDim") return LV_SYMBOL_EYE_CLOSE;
     if (a == "screenOff") return LV_SYMBOL_POWER;
+    if (a == "switchSync") return LV_SYMBOL_REFRESH;
     return LV_SYMBOL_SETTINGS;
   }
   return LV_SYMBOL_PLAY;  // task
@@ -437,6 +438,102 @@ bool pollSwitchReply() {
   return true;
 }
 
+// --- Switch state sync ----------------------------------------------------------------
+//
+// A switch's stored state can go stale (the lights were switched from the
+// app or a wall switch). So the panel asks the Core for the real state —
+// "switch-state", answered from the lights the switch's "on" scene acts on —
+// once at boot (as soon as the server is reachable) and again on each screen
+// wake, at most once per settingsSwitchSyncSec() (default 10 min; 0 = boot
+// only). A reply that differs updates the tile.
+
+constexpr uint32_t kSyncReplyMs = 10000;
+
+struct SwitchSync {
+  String requestId;
+  JsonObjectConst node;
+  uint32_t sentAt;
+};
+std::vector<SwitchSync> gSyncPending;
+bool gSyncedOnce = false;
+uint32_t gLastSync = 0;
+uint32_t gSeenWake = 0;
+
+void collectSwitches(JsonArrayConst nodes, std::vector<JsonObjectConst> &out) {
+  for (JsonObjectConst n : nodes) {
+    const String type = n["type"] | "";
+    if (type == "switch") out.push_back(n);
+    else if (type == "folder") collectSwitches(n["children"].as<JsonArrayConst>(), out);
+  }
+}
+
+void syncSwitches(const char *why) {
+  if (!netMqttIsConnected()) return;  // try again on the next trigger
+  std::vector<JsonObjectConst> switches;
+  collectSwitches(configMenu(), switches);
+  int asked = 0;
+  for (JsonObjectConst n : switches) {
+    const char *onScene = n["switch"]["on"]["tuyaScene"] | "";
+    if (!*onScene) continue;  // nothing the Core could read it from
+    JsonDocument node, spec, extra;
+    node["id"] = String(n["id"] | "?") + "-state";
+    spec["payload"]["taskId"] = "switch-state";
+    spec["qos"] = 1;
+    spec["expectsResult"] = true;
+    extra["onScene"] = onScene;
+    String requestId;
+    if (publishTask(node.as<JsonObjectConst>(), spec.as<JsonObjectConst>(),
+                    extra.as<JsonObjectConst>(), requestId)) {
+      gSyncPending.push_back({requestId, n, millis()});
+      asked++;
+    }
+  }
+  gSyncedOnce = true;
+  gLastSync = millis();
+  Serial.printf("[Switch] sync (%s): asked for %d switch state(s)\n", why, asked);
+}
+
+// Menu loop hook. True when a switch tile changed and the grid must redraw.
+bool pollSwitchSync() {
+  if (!gSyncedOnce) {
+    syncSwitches("boot");
+  } else if (displayWakeCount() != gSeenWake) {
+    gSeenWake = displayWakeCount();
+    const uint32_t every = settingsSwitchSyncSec();
+    if (every > 0 && millis() - gLastSync >= every * 1000) syncSwitches("wake");
+  }
+
+  bool changed = false;
+  for (size_t i = 0; i < gSyncPending.size();) {
+    SwitchSync &p = gSyncPending[i];
+    String json;
+    const bool got = appTakeTaskResult(p.requestId, json);
+    if (!got && millis() - p.sentAt < kSyncReplyMs) {
+      i++;
+      continue;
+    }
+    if (got) {
+      JsonDocument r;
+      deserializeJson(r, json);
+      const char *id = p.node["id"] | "?";
+      const String state = r["result"]["state"] | "";
+      if (String(r["result"]["status"] | "") != "ok" || state.isEmpty()) {
+        Serial.printf("[Switch] %s: state unknown (%s)\n", id, (r["result"]["message"] | "?"));
+      } else if (gPendingSwitch.active && gPendingSwitch.id == id) {
+        // The user just toggled it; their tap wins over this older reading.
+      } else if ((state == "on") != switchState(p.node)) {
+        setSwitchState(id, state == "on");
+        Serial.printf("[Switch] %s: now %s (%s)\n", id, state.c_str(), (r["result"]["message"] | ""));
+        changed = true;
+      } else {
+        Serial.printf("[Switch] %s: %s, unchanged\n", id, state.c_str());
+      }
+    }
+    gSyncPending.erase(gSyncPending.begin() + i);
+  }
+  return changed;
+}
+
 // --- Phone volume (local action "phoneVolume") ----------------------------------
 //
 // One control: a full-width slider, 0-100, with the value in large type
@@ -725,6 +822,14 @@ const TimeoutSetting kDimSetting = {
     "screen dim", LV_SYMBOL_EYE_CLOSE, "Dim the screen after this long idle", kDimChoices,
     sizeof(kDimChoices) / sizeof(kDimChoices[0]), settingsDimAfterSec, settingsSetDimAfterSec,
     displaySetAutoDim};
+void applyNothing(uint32_t) {}  // read on the next screen wake
+
+const uint32_t kSwitchSyncChoices[] = {0, 60, 300, 600, 1800, 3600};
+const TimeoutSetting kSwitchSyncSetting = {
+    "switch sync", LV_SYMBOL_REFRESH, "Recheck on wake; Never = boot only",
+    kSwitchSyncChoices, sizeof(kSwitchSyncChoices) / sizeof(kSwitchSyncChoices[0]),
+    settingsSwitchSyncSec, settingsSetSwitchSyncSec, applyNothing};
+
 const TimeoutSetting kOffSetting = {
     "screen off", LV_SYMBOL_POWER, "Turn the screen off after this long idle", kOffChoices,
     sizeof(kOffChoices) / sizeof(kOffChoices[0]), settingsOffAfterSec, settingsSetOffAfterSec,
@@ -809,6 +914,8 @@ void runAction(JsonObjectConst node) {
     timeoutScreen(kDimSetting, node["label"] | "Screen dimming");
   } else if (action == "screenOff") {
     timeoutScreen(kOffSetting, node["label"] | "Screen off");
+  } else if (action == "switchSync") {
+    timeoutScreen(kSwitchSyncSetting, node["label"] | "Switch sync");
   } else if (action == "showAbout") {
     notice("about", "About\nIcons by Icons8 - https://icons8.com", LV_SYMBOL_LIST,
            lv_color_white());
@@ -1257,7 +1364,8 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
       if (ev == InputEvent::None) {
         const bool switchUndone = pollSwitchReply();
         const bool tasks = pollTileTasks();
-        if (pollSceneState() || tasks || switchUndone) break;  // a tile changed: redraw
+        const bool synced = pollSwitchSync();
+        if (pollSceneState() || tasks || switchUndone || synced) break;  // a tile changed: redraw
       }
       if (linkState() != drawnLink) {
         Serial.printf("[Menu] link: %s\n", linkState() == Link::Online     ? "online"

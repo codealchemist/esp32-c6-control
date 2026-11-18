@@ -23,3 +23,7 @@ bool uiEditInt(const String &title, int &value, int minValue, int maxValue, int 
 // The Core's scene_state command: which Tuya scenes (lowercase names) are
 // active right now. Tiles running one of them are highlighted.
 void menuSetActiveScenes(JsonArrayConst names);
+
+// The Core's weather_alert push: the active alert list (header badge) and
+// which are new (announced with a pop-up).
+void menuWeatherAlerts(JsonVariantConst push);

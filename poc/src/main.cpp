@@ -354,6 +354,8 @@ void onlineService() {
     JsonDocument doc;
     if (deserializeJson(doc, cmd) != DeserializationError::Ok) {
       Serial.println("[Command] not JSON - ignored");
+    } else if (String(doc["action"] | "") == "weather_alert") {
+      menuWeatherAlerts(doc.as<JsonVariantConst>());
     } else if (String(doc["action"] | "") == "scene_state") {
       menuSetActiveScenes(doc["active"].as<JsonArrayConst>());
     } else if (String(doc["action"] | "") == "task_result") {
@@ -416,6 +418,12 @@ bool appTakeTaskResult(const String &requestId, String &resultJson) {
 
 void setup() {
   Serial.begin(115200);
+  // Never wait on the USB serial console. With USB plugged into a computer
+  // but no serial monitor reading (e.g. after a flash/test session), the
+  // driver otherwise waits up to ~2s per log write (20 x its 100ms timeout)
+  // for a host that never reads: the UI froze and the loop watchdog rebooted
+  // the board. Now unread log output is simply dropped.
+  Serial.setTxTimeoutMs(0);
   // Just long enough for a USB serial monitor to attach and catch the banner;
   // the screen comes up right after config load.
   delay(300);

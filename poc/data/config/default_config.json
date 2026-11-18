@@ -44,6 +44,13 @@
       "action": "volume"
     },
     {
+      "id": "weather",
+      "type": "action",
+      "label": "Weather",
+      "icon": "icon_weather",
+      "action": "weather"
+    },
+    {
       "id": "messages",
       "type": "folder",
       "label": "Messages",

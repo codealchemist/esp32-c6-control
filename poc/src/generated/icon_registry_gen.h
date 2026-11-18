@@ -17,6 +17,22 @@ extern const lv_image_dsc_t icon_day;
 extern const lv_image_dsc_t icon_high_night;
 extern const lv_image_dsc_t icon_phone;
 extern const lv_image_dsc_t icon_computer;
+extern const lv_image_dsc_t icon_weather;
+extern const lv_image_dsc_t icon_wx_sun;
+extern const lv_image_dsc_t icon_wx_moon;
+extern const lv_image_dsc_t icon_wx_partly;
+extern const lv_image_dsc_t icon_wx_cloud;
+extern const lv_image_dsc_t icon_wx_rain;
+extern const lv_image_dsc_t icon_wx_storm;
+extern const lv_image_dsc_t icon_wx_fog;
+extern const lv_image_dsc_t icon_wx_snow;
+extern const lv_image_dsc_t icon_ic_wind;
+extern const lv_image_dsc_t icon_ic_tmax;
+extern const lv_image_dsc_t icon_ic_tmin;
+extern const lv_image_dsc_t icon_ic_rain;
+extern const lv_image_dsc_t icon_ic_uv;
+extern const lv_image_dsc_t icon_ic_sunrise;
+extern const lv_image_dsc_t icon_ic_sunset;
 
 struct IconRegistryEntry { const char *id; const lv_image_dsc_t *img; };
 static const IconRegistryEntry kIconRegistry[] = {
@@ -28,5 +44,21 @@ static const IconRegistryEntry kIconRegistry[] = {
     {"icon_high_night", &icon_high_night},
     {"icon_phone", &icon_phone},
     {"icon_computer", &icon_computer},
+    {"icon_weather", &icon_weather},
+    {"icon_wx_sun", &icon_wx_sun},
+    {"icon_wx_moon", &icon_wx_moon},
+    {"icon_wx_partly", &icon_wx_partly},
+    {"icon_wx_cloud", &icon_wx_cloud},
+    {"icon_wx_rain", &icon_wx_rain},
+    {"icon_wx_storm", &icon_wx_storm},
+    {"icon_wx_fog", &icon_wx_fog},
+    {"icon_wx_snow", &icon_wx_snow},
+    {"icon_ic_wind", &icon_ic_wind},
+    {"icon_ic_tmax", &icon_ic_tmax},
+    {"icon_ic_tmin", &icon_ic_tmin},
+    {"icon_ic_rain", &icon_ic_rain},
+    {"icon_ic_uv", &icon_ic_uv},
+    {"icon_ic_sunrise", &icon_ic_sunrise},
+    {"icon_ic_sunset", &icon_ic_sunset},
 };
-static const size_t kIconRegistryCount = 8;
+static const size_t kIconRegistryCount = 24;

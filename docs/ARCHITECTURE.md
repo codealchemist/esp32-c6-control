@@ -276,6 +276,19 @@ provisioned to NVS separately, never stored in the JSON config alongside
   `switch` tiles are dimmed and a tap just shows the red cross (nothing is
   queued, §6.3); local actions, folders and the phone volume keep working.
   Everything lights up again on reconnect, with no reboot.
+- **Weather (`"weather"` action).** A page set like Device details: Now
+  (conditions, temperature, feels-like, humidity, wind, rain), UV (now and
+  today's max, coloured on the WHO scale, with a tip), 3 days (icon, high/low,
+  rain %) and Alerts (SMN alerts for the home's location; tap for the
+  instructions). Data comes from the Core's `weather` extension: Open-Meteo
+  for the forecast (every 15 min) and SMN Argentina's CAP feed for alerts
+  (every 5 min, filtered by the alert polygon). Location: the Tuya home's, or
+  `WEATHER_ADDRESS` in the Core's `.env` (geocoded once via Nominatim).
+  Tasks: `weather` (snapshot) and `weather-alert` (one alert's text); the
+  Core pushes `{ action: "weather_alert", alerts, new }` when alerts change:
+  new ones pop up (waking the screen) and the home header shows a ⚠ badge
+  with the count, coloured by the worst level. Text sent to the panel is
+  ASCII (its fonts have no accented letters).
 - **Shortcut button (`"shortcut"` field).** Marks a task or switch as one
   the physical shortcut button may run; other types are rejected, since a
   press can't choose a value (Volume, for example, is not a fit).

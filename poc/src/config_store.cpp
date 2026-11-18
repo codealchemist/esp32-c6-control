@@ -203,7 +203,7 @@ struct Validator {
       if (action != "reprovision" && action != "restoreDefaultConfig" && action != "showAbout" &&
           action != "volume" && action != "phoneVolume" && action != "screenDim" &&
           action != "screenOff" && action != "switchSync" &&
-          action != "shortcut") {
+          action != "shortcut" && action != "weather") {
         error(where, "unknown action '" + action + "'");
       }
       detail = "action " + action;

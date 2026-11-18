@@ -71,6 +71,117 @@
       "size": 28,
       "license": "free-attribution",
       "file": "data/icons_src/icons8/icon_computer.png"
+    },
+    {
+      "id": "icon_weather",
+      "source": "partly-cloudy-day",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_weather.png"
+    },
+    {
+      "id": "icon_wx_sun",
+      "source": "sun",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_wx_sun.png",
+      "size": 48
+    },
+    {
+      "id": "icon_wx_moon",
+      "source": "crescent-moon",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_wx_moon.png",
+      "size": 48
+    },
+    {
+      "id": "icon_wx_partly",
+      "source": "partly-cloudy-day",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_wx_partly.png",
+      "size": 48
+    },
+    {
+      "id": "icon_wx_cloud",
+      "source": "cloud",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_wx_cloud.png",
+      "size": 48
+    },
+    {
+      "id": "icon_wx_rain",
+      "source": "rain",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_wx_rain.png",
+      "size": 48
+    },
+    {
+      "id": "icon_wx_storm",
+      "source": "storm",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_wx_storm.png",
+      "size": 48
+    },
+    {
+      "id": "icon_wx_fog",
+      "source": "fog-day",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_wx_fog.png",
+      "size": 48
+    },
+    {
+      "id": "icon_wx_snow",
+      "source": "snow",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_wx_snow.png",
+      "size": 48
+    },
+    {
+      "id": "icon_ic_wind",
+      "source": "wind",
+      "size": 24,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_ic_wind.png"
+    },
+    {
+      "id": "icon_ic_tmax",
+      "source": "thermometer-up",
+      "size": 24,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_ic_tmax.png"
+    },
+    {
+      "id": "icon_ic_tmin",
+      "source": "thermometer-down",
+      "size": 24,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_ic_tmin.png"
+    },
+    {
+      "id": "icon_ic_rain",
+      "source": "umbrella",
+      "size": 24,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_ic_rain.png"
+    },
+    {
+      "id": "icon_ic_uv",
+      "source": "sun",
+      "size": 24,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_ic_uv.png"
+    },
+    {
+      "id": "icon_ic_sunrise",
+      "source": "sunrise",
+      "size": 24,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_ic_sunrise.png"
+    },
+    {
+      "id": "icon_ic_sunset",
+      "source": "sunset",
+      "size": 24,
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_ic_sunset.png"
     }
   ]
 }

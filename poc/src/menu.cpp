@@ -75,6 +75,7 @@ const char *nodeSymbol(JsonObjectConst n) {
     if (a == "screenOff") return LV_SYMBOL_POWER;
     if (a == "switchSync") return LV_SYMBOL_REFRESH;
     if (a == "shortcut") return LV_SYMBOL_KEYBOARD;
+    if (a == "weather") return LV_SYMBOL_EYE_OPEN;
     return LV_SYMBOL_SETTINGS;
   }
   return LV_SYMBOL_PLAY;  // task
@@ -925,6 +926,7 @@ void timeoutScreen(const TimeoutSetting &t, const String &label) {
 }
 
 void shortcutPickerScreen(const String &title);  // Shortcut button section, below
+void weatherScreen();                            // Weather section, below
 
 // --- Local actions (§5.2) -------------------------------------------------------
 
@@ -937,13 +939,16 @@ void runAction(JsonObjectConst node) {
     timeoutScreen(kDimSetting, node["label"] | "Screen dimming");
   } else if (action == "screenOff") {
     timeoutScreen(kOffSetting, node["label"] | "Screen off");
+  } else if (action == "weather") {
+    weatherScreen();
   } else if (action == "shortcut") {
     shortcutPickerScreen(node["label"] | "Shortcut button");
   } else if (action == "switchSync") {
     timeoutScreen(kSwitchSyncSetting, node["label"] | "Switch sync");
   } else if (action == "showAbout") {
-    notice("about", "About\nIcons by Icons8 - https://icons8.com", LV_SYMBOL_LIST,
-           lv_color_white());
+    // Free-tier terms: Icons8 and Open-Meteo (CC BY 4.0) need a visible credit.
+    notice("about", "About\nIcons by Icons8 - icons8.com\nWeather: Open-Meteo (CC BY 4.0),\nalerts: SMN Argentina",
+           LV_SYMBOL_LIST, lv_color_white());
   } else if (action == "reprovision") {
     if (!confirm("Reset Wi-Fi/MQTT?\nPairing is erased", "Reset")) return;
     toast("reprovision", "Resetting...\nPair again after restart", LV_SYMBOL_REFRESH,
@@ -1193,6 +1198,432 @@ void shortcutPickerScreen(const String &title) {
     if (lv_display_get_inactive_time(nullptr) >= 30000) return;
     delay(5);
   }
+}
+
+// --- Weather (local action "weather") ----------------------------------------------
+//
+// Data comes from the Core's weather extension (Open-Meteo forecast, SMN
+// alerts): task "weather" returns a snapshot, task "weather-alert" one
+// alert's details, and the Core pushes "weather_alert" whenever the active
+// alerts change. Pages, swiped like Device details: Now, UV, 3 days, Alerts.
+
+struct WeatherAlert {
+  String id, event;
+  int level = 1;          // 1 yellow, 2 orange, 3 red
+  uint32_t startsAt = 0;  // millis()
+  uint32_t endsAt = 0;
+};
+std::vector<WeatherAlert> gAlerts;
+std::vector<String> gAlertPopups;  // new alerts to announce
+bool gAlertsChanged = false;
+
+lv_color_t alertColor(int level) {
+  return lv_palette_main(level >= 3 ? LV_PALETTE_RED : level == 2 ? LV_PALETTE_ORANGE : LV_PALETTE_YELLOW);
+}
+
+const char *alertLevelName(int level) { return level >= 3 ? "Red" : level == 2 ? "Orange" : "Yellow"; }
+
+void setAlerts(JsonArrayConst list) {
+  gAlerts.clear();
+  const uint32_t now = millis();
+  for (JsonObjectConst a : list) {
+    WeatherAlert w;
+    w.id = a["id"] | "";
+    w.event = a["ev"] | "Alert";
+    w.level = a["lv"] | 1;
+    w.startsAt = now + (uint32_t)(a["st"] | 0) * 60000;
+    w.endsAt = now + (uint32_t)(a["min"] | 0) * 60000;
+    gAlerts.push_back(w);
+  }
+  gAlertsChanged = true;
+}
+
+int activeAlertCount(int *maxLevel = nullptr) {
+  int n = 0, lv = 0;
+  for (const WeatherAlert &a : gAlerts) {
+    if ((int32_t)(millis() - a.endsAt) >= 0) continue;  // over
+    n++;
+    lv = std::max(lv, a.level);
+  }
+  if (maxLevel) *maxLevel = lv;
+  return n;
+}
+
+String minutesText(uint32_t ms) {
+  const uint32_t m = ms / 60000;
+  if (m < 60) return String(m) + " min";
+  if (m < 48 * 60) return String((m + 30) / 60) + " h";
+  return String((m + 720) / 1440) + " days";
+}
+
+String alertWhen(const WeatherAlert &a) {
+  const uint32_t now = millis();
+  if ((int32_t)(a.startsAt - now) > 60000) return "from " + minutesText(a.startsAt - now);
+  return "until " + minutesText(a.endsAt - now);
+}
+
+// WMO weather code -> words and icon.
+const char *wxText(int c) {
+  if (c == 0) return "Clear";
+  if (c <= 2) return "Partly cloudy";
+  if (c == 3) return "Cloudy";
+  if (c == 45 || c == 48) return "Fog";
+  if (c >= 51 && c <= 57) return "Drizzle";
+  if ((c >= 61 && c <= 67) || (c >= 80 && c <= 82)) return "Rain";
+  if ((c >= 71 && c <= 77) || c == 85 || c == 86) return "Snow";
+  if (c >= 95) return "Storm";
+  return "-";
+}
+
+const char *wxIcon(int c, bool day) {
+  if (c == 0) return day ? "icon_wx_sun" : "icon_wx_moon";
+  if (c <= 2) return day ? "icon_wx_partly" : "icon_wx_moon";
+  if (c == 3) return "icon_wx_cloud";
+  if (c == 45 || c == 48) return "icon_wx_fog";
+  if ((c >= 71 && c <= 77) || c == 85 || c == 86) return "icon_wx_snow";
+  if (c >= 95) return "icon_wx_storm";
+  return "icon_wx_rain";
+}
+
+const char *uvLevel(float uv) {
+  if (uv < 3) return "Low";
+  if (uv < 6) return "Moderate";
+  if (uv < 8) return "High";
+  if (uv < 11) return "Very high";
+  return "Extreme";
+}
+
+lv_color_t uvColor(float uv) {
+  if (uv < 3) return lv_palette_main(LV_PALETTE_GREEN);
+  if (uv < 6) return lv_palette_main(LV_PALETTE_YELLOW);
+  if (uv < 8) return lv_palette_main(LV_PALETTE_ORANGE);
+  if (uv < 11) return lv_palette_main(LV_PALETTE_RED);
+  return lv_palette_main(LV_PALETTE_PURPLE);
+}
+
+String num1(float x) { return String(x, (x == (int)x) ? 0 : 1); }
+
+// Asks the Core for something weather-related and waits (pumping) up to 6s.
+bool weatherAsk(const char *taskId, const char *alertId, JsonDocument &out) {
+  if (!netMqttIsConnected()) return false;
+  JsonDocument node, spec, extra;
+  node["id"] = "weather";
+  spec["payload"]["taskId"] = taskId;
+  spec["qos"] = 1;
+  spec["expectsResult"] = true;
+  if (alertId) extra["id"] = alertId;
+  String requestId;
+  if (!publishTask(node.as<JsonObjectConst>(), spec.as<JsonObjectConst>(), extra.as<JsonObjectConst>(),
+                   requestId)) {
+    return false;
+  }
+  const uint32_t start = millis();
+  String json;
+  while (millis() - start < 6000) {
+    appPump();
+    if (appTakeTaskResult(requestId, json)) {
+      out.clear();
+      deserializeJson(out, json);
+      return String(out["result"]["status"] | "") == "ok";
+    }
+    delay(5);
+  }
+  return false;
+}
+
+lv_obj_t *wxLabel(lv_obj_t *parent, const String &text, const lv_font_t *font, lv_color_t color,
+                  int32_t x, int32_t y) {
+  lv_obj_t *l = lv_label_create(parent);
+  lv_label_set_text(l, text.c_str());
+  lv_obj_set_style_text_font(l, font, 0);
+  lv_obj_set_style_text_color(l, color, 0);
+  lv_obj_set_pos(l, x, y);
+  return l;
+}
+
+lv_obj_t *wxIconImg(lv_obj_t *parent, const char *id, int32_t x, int32_t y, uint16_t scale = 256) {
+  const lv_image_dsc_t *img = iconImage(id);
+  if (!img) return nullptr;
+  lv_obj_t *o = lv_image_create(parent);
+  lv_image_set_src(o, img);
+  if (scale != 256) lv_image_set_scale(o, scale);
+  lv_obj_set_pos(o, x, y);
+  return o;
+}
+
+void weatherPageDots(lv_obj_t *scr, int page, int pages) {
+  for (int i = 0; i < pages; i++) {
+    lv_obj_t *d = lv_obj_create(scr);
+    lv_obj_remove_style_all(d);
+    lv_obj_set_size(d, 8, 8);
+    lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(d, i == page ? lv_color_white() : lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_set_pos(d, 320 - 14 - (pages - i) * 16 + 8, 22);
+  }
+}
+
+int gWxTappedAlert = -1;
+void onWxAlertTap(lv_event_t *e) {
+  gWxTappedAlert = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  inputInject(InputEvent::EncoderPressShort);
+}
+
+// A 24 px icon with a caption beside it, tinted alike (card headings).
+void wxCaption(lv_obj_t *parent, const char *iconId, const char *text, lv_color_t color, int32_t x, int32_t y) {
+  int32_t tx = x;
+  if (lv_obj_t *ic = wxIconImg(parent, iconId, x, y - 1)) {
+    lv_obj_set_style_image_recolor(ic, color, 0);
+    lv_obj_set_style_image_recolor_opa(ic, LV_OPA_COVER, 0);
+    tx = x + 24 + 6;
+  }
+  if (text && *text) wxLabel(parent, text, &lv_font_montserrat_20, color, tx, y);
+}
+
+constexpr int kWxPages = 6;
+constexpr int kWxAlertsPage = kWxPages - 1;
+
+// A temperature: the number, then a small ring as the degree sign (the
+// built-in fonts have no "°"). Returns the label.
+lv_obj_t *wxTemp(lv_obj_t *parent, int value, const lv_font_t *font, lv_color_t color, int32_t x, int32_t y) {
+  lv_obj_t *l = wxLabel(parent, String(value), font, color, x, y);
+  lv_obj_update_layout(l);
+  const int32_t h = lv_font_get_line_height(font);
+  const int32_t d = h >= 48 ? 12 : h >= 28 ? 8 : 6;  // ring size to suit the font
+  lv_obj_t *ring = lv_obj_create(parent);
+  lv_obj_remove_style_all(ring);
+  lv_obj_set_size(ring, d, d);
+  lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(ring, d >= 12 ? 3 : 2, 0);
+  lv_obj_set_style_border_color(ring, color, 0);
+  lv_obj_set_pos(ring, x + lv_obj_get_width(l) + 2, y + h / 6);
+  return l;
+}
+
+// Minutes between "HH:MM" strings, -1 if unusable.
+int minutesBetween(const char *a, const char *b) {
+  int ah, am, bh, bm;
+  if (sscanf(a, "%d:%d", &ah, &am) != 2 || sscanf(b, "%d:%d", &bh, &bm) != 2) return -1;
+  return (bh * 60 + bm) - (ah * 60 + am);
+}
+
+void drawWeatherPage(JsonObjectConst r, int page, lv_screen_load_anim_t anim) {
+  static const char *kTitles[kWxPages] = {"Weather", "Today", "UV index", "Sun", "3 days", "Alerts"};
+  lv_obj_t *scr = uiBlankScreen("weather", anim);
+  lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);
+  // Title only: a place name here ran into the page dots. The location is
+  // named on the Alerts card ("No alerts for ...").
+  makePageHeader(scr, kTitles[page]);
+  weatherPageDots(scr, page, kWxPages);
+  const lv_color_t grey = lv_palette_main(LV_PALETTE_GREY), white = lv_color_white();
+  const lv_color_t warm = lv_palette_lighten(LV_PALETTE_ORANGE, 1), cool = lv_palette_lighten(LV_PALETTE_BLUE, 1);
+
+  if (r.isNull()) {
+    wxLabel(scr, netMqttIsConnected() ? "No weather data" : "No server", &lv_font_montserrat_28, grey, 16, 90);
+    return;
+  }
+  JsonObjectConst now = r["now"];
+  if (page == 0) {  // Now
+    wxIconImg(scr, wxIcon(now["c"] | 0, (now["d"] | 1) == 1), 12, 58);
+    wxTemp(scr, now["t"] | 0, &lv_font_montserrat_48, white, 70, 52);
+    lv_obj_t *cond = wxLabel(scr, wxText(now["c"] | 0), &lv_font_montserrat_28, white, 12, 112);
+    lv_obj_set_width(cond, 300);
+    lv_label_set_long_mode(cond, LV_LABEL_LONG_DOT);
+    lv_obj_t *fl = wxLabel(scr, "Feels", &lv_font_montserrat_20, grey, 12, 146);
+    lv_obj_update_layout(fl);
+    wxTemp(scr, now["f"] | 0, &lv_font_montserrat_20, grey, 12 + lv_obj_get_width(fl) + 8, 146);
+    wxLabel(scr, String(LV_SYMBOL_TINT " ") + String(now["h"] | 0) + "%", &lv_font_montserrat_28, cool, 196, 54);
+    wxCaption(scr, "icon_ic_wind", (String(now["w"] | 0) + " km/h").c_str(), white, 196, 92);
+  } else if (page == 1) {  // Today: max / min
+    // Three columns at the same size: Max, Min, Rain. The "%" is smaller so
+    // "100%" still fits the last column.
+    JsonObjectConst t = r["today"];
+    wxCaption(scr, "icon_ic_tmax", "Max", grey, 12, 60);
+    wxTemp(scr, t["x"] | 0, &lv_font_montserrat_48, warm, 12, 86);
+    wxCaption(scr, "icon_ic_tmin", "Min", grey, 112, 60);
+    wxTemp(scr, t["n"] | 0, &lv_font_montserrat_48, cool, 112, 86);
+    wxCaption(scr, "icon_ic_rain", "Rain", grey, 210, 60);
+    lv_obj_t *rain = wxLabel(scr, String(t["r"] | 0), &lv_font_montserrat_48, lv_palette_main(LV_PALETTE_BLUE), 210, 86);
+    lv_obj_update_layout(rain);
+    wxLabel(scr, "%", &lv_font_montserrat_28, lv_palette_main(LV_PALETTE_BLUE), 210 + lv_obj_get_width(rain) + 2, 100);
+  } else if (page == 2) {  // UV
+    const float uv = r["uv"]["n"] | 0.0f, mx = r["uv"]["m"] | 0.0f;
+    wxCaption(scr, "icon_ic_uv", "Now", grey, 20, 56);
+    wxLabel(scr, num1(uv), &lv_font_montserrat_48, uvColor(uv), 20, 78);
+    wxLabel(scr, uvLevel(uv), &lv_font_montserrat_20, uvColor(uv), 20, 132);
+    wxCaption(scr, "icon_ic_uv", "Max today", grey, 172, 56);
+    wxLabel(scr, num1(mx), &lv_font_montserrat_48, uvColor(mx), 172, 78);
+    wxLabel(scr, uvLevel(mx), &lv_font_montserrat_20, uvColor(mx), 172, 132);  // severity, like "Now"
+  } else if (page == 3) {  // Sun
+    const char *rise = r["sun"]["r"] | "--:--";
+    const char *set = r["sun"]["s"] | "--:--";
+    wxCaption(scr, "icon_ic_sunrise", "Sunrise", grey, 20, 56);
+    wxLabel(scr, rise, &lv_font_montserrat_48, warm, 20, 78);
+    wxCaption(scr, "icon_ic_sunset", "Sunset", grey, 172, 56);
+    wxLabel(scr, set, &lv_font_montserrat_48, lv_palette_lighten(LV_PALETTE_DEEP_ORANGE, 1), 172, 78);
+    const int len = minutesBetween(rise, set);
+    if (len > 0) {
+      // "Daylight" in grey, the duration highlighted.
+      lv_obj_t *dl = wxLabel(scr, "Daylight", &lv_font_montserrat_20, grey, 20, 140);
+      lv_obj_update_layout(dl);
+      wxLabel(scr, String(len / 60) + " h " + String(len % 60) + " min", &lv_font_montserrat_20,
+              lv_palette_main(LV_PALETTE_AMBER), 20 + lv_obj_get_width(dl) + 8, 140);
+    }
+  } else if (page == 4) {  // 3 days
+    int i = 0;
+    for (JsonArrayConst d : r["days"].as<JsonArrayConst>()) {
+      const int32_t y = 52 + i * 40;
+      wxLabel(scr, d[0] | "", &lv_font_montserrat_28, white, 12, y + 4);
+      wxIconImg(scr, wxIcon(d[1] | 0, true), 104, y - 4, 171);  // 48 -> 32 px
+      lv_obj_t *hi = wxTemp(scr, d[2] | 0, &lv_font_montserrat_28, warm, 150, y + 4);
+      lv_obj_update_layout(hi);
+      lv_obj_t *sl = wxLabel(scr, "/", &lv_font_montserrat_28, grey, 150 + lv_obj_get_width(hi) + 14, y + 4);
+      lv_obj_update_layout(sl);
+      wxTemp(scr, d[3] | 0, &lv_font_montserrat_28, cool, lv_obj_get_x(sl) + lv_obj_get_width(sl) + 6, y + 4);
+      wxLabel(scr, String(d[4] | 0) + "%", &lv_font_montserrat_20, lv_palette_main(LV_PALETTE_BLUE), 266, y + 8);
+      if (++i == 3) break;
+    }
+  } else {  // Alerts
+    if (gAlerts.empty()) {
+      wxLabel(scr, LV_SYMBOL_OK "  No alerts", &lv_font_montserrat_28, lv_palette_main(LV_PALETTE_GREEN), 16, 66);
+      wxLabel(scr, String("for ") + (r["loc"] | "your area"), &lv_font_montserrat_20, grey, 16, 104);
+      wxLabel(scr, "Source: SMN Argentina", &lv_font_montserrat_14, grey, 16, 150);
+    }
+    for (size_t i = 0; i < gAlerts.size() && i < 3; i++) {
+      const WeatherAlert &a = gAlerts[i];
+      lv_obj_t *row = lv_obj_create(scr);
+      lv_obj_remove_style_all(row);
+      lv_obj_set_pos(row, 6, 52 + i * 39);
+      lv_obj_set_size(row, 308, 35);
+      lv_obj_set_style_radius(row, 8, 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+      lv_obj_set_style_bg_color(row, lv_color_hex(0x1C1C1C), 0);
+      lv_obj_set_style_bg_color(row, lv_color_hex(0x3A3A3A), LV_STATE_PRESSED);
+      lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
+      lv_obj_set_style_border_width(row, 6, 0);
+      lv_obj_set_style_border_color(row, alertColor(a.level), 0);
+      lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_flag(row, LV_OBJ_FLAG_GESTURE_BUBBLE);
+      lv_obj_add_event_cb(row, onWxAlertTap, LV_EVENT_CLICKED,
+                          reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+      lv_obj_t *l = lv_label_create(row);
+      lv_label_set_text(l, (a.event + "  " + alertWhen(a)).c_str());
+      lv_obj_set_width(l, 290);
+      lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+      lv_obj_align(l, LV_ALIGN_LEFT_MID, 12, 0);
+    }
+  }
+}
+
+// One alert's headline and instructions, scrollable; any input closes.
+void weatherAlertDetail(const WeatherAlert &a) {
+  JsonDocument d;
+  const bool ok = weatherAsk("weather-alert", a.id.c_str(), d);
+  lv_obj_t *scr = uiBlankScreen("weather-alert");
+  makePageHeader(scr, String(alertLevelName(a.level)) + " alert");
+  lv_obj_t *box = lv_obj_create(scr);
+  lv_obj_remove_style_all(box);
+  lv_obj_set_pos(box, 8, 50);
+  lv_obj_set_size(box, 304, 118);
+  lv_obj_set_scroll_dir(box, LV_DIR_VER);
+  lv_obj_add_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *t = lv_label_create(box);
+  lv_obj_set_width(t, 300);
+  lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+  const String text = ok ? String(d["result"]["head"] | "") + "\n\n" + (d["result"]["text"] | "") +
+                               "\n\nArea: " + (d["result"]["area"] | "")
+                         : String(d["result"]["message"] | "Couldn't load the details");
+  lv_label_set_text(t, text.c_str());
+  lv_obj_set_style_text_color(t, lv_color_white(), 0);
+  lv_obj_set_style_border_side(box, LV_BORDER_SIDE_LEFT, 0);
+  Serial.printf("[Weather] alert %s details %s\n", a.id.c_str(), ok ? "shown" : "unavailable");
+  takeSwipe();
+  while (true) {
+    appPump();
+    const InputEvent ev = inputPoll();
+    if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
+      if (takeSwipe()) {
+        if (ev == InputEvent::EncoderCCW) return;  // swipe right: back
+        continue;
+      }
+      lv_obj_scroll_by(box, 0, ev == InputEvent::EncoderCW ? -40 : 40, LV_ANIM_ON);  // knob scrolls
+    } else if (ev == InputEvent::ShortcutPress) {
+      inputInject(ev);
+      return;
+    } else if (ev != InputEvent::None) {
+      return;
+    }
+    if (lv_display_get_inactive_time(nullptr) >= 60000) return;
+    delay(5);
+  }
+}
+
+void weatherScreen() {
+  JsonDocument d;
+  // Loading page first: the answer can take a moment.
+  lv_obj_t *scr = uiBlankScreen("weather");
+  makePageHeader(scr, "Weather");
+  wxLabel(scr, "Loading...", &lv_font_montserrat_20, lv_palette_main(LV_PALETTE_GREY), 16, 90);
+  displayTick();
+  const bool ok = weatherAsk("weather", nullptr, d);
+  JsonObjectConst r = ok ? d["result"].as<JsonObjectConst>() : JsonObjectConst();
+  if (ok) setAlerts(r["alerts"].as<JsonArrayConst>());
+  Serial.printf("[Weather] %s\n", ok ? (String(r["message"] | "") + ", alerts " + String(gAlerts.size())).c_str()
+                                     : "no data");
+
+  int page = 0;
+  drawWeatherPage(r, page, LV_SCREEN_LOAD_ANIM_NONE);
+  takeSwipe();
+  gWxTappedAlert = -1;
+  while (true) {
+    appPump();
+    const InputEvent ev = inputPoll();
+    if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
+      const bool fwd = ev == InputEvent::EncoderCW;
+      takeSwipe();
+      if (!fwd && page == 0) return;  // swipe right / turn left on the first page: back
+      page = (page + (fwd ? 1 : kWxPages - 1)) % kWxPages;
+      drawWeatherPage(r, page, fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT);
+    } else if (ev == InputEvent::EncoderPressShort && page == kWxAlertsPage && !gAlerts.empty()) {
+      const int i = gWxTappedAlert >= 0 ? gWxTappedAlert : 0;
+      gWxTappedAlert = -1;
+      if (i < (int)gAlerts.size()) weatherAlertDetail(gAlerts[i]);
+      drawWeatherPage(r, page, LV_SCREEN_LOAD_ANIM_NONE);
+    } else if (ev == InputEvent::ShortcutPress) {
+      inputInject(ev);
+      return;
+    } else if (ev != InputEvent::None && ev != InputEvent::EncoderPressShort) {
+      return;  // back button / BOOT / swipe down
+    }
+    if (gAlertsChanged && page == kWxAlertsPage) {
+      gAlertsChanged = false;
+      drawWeatherPage(r, page, LV_SCREEN_LOAD_ANIM_NONE);
+    }
+    if (lv_display_get_inactive_time(nullptr) >= 60000) return;
+    delay(5);
+  }
+}
+
+// Home loop hook: announce new alerts (waking the screen).
+bool pollWeatherAlerts() {
+  bool redraw = false;
+  if (gAlertsChanged) {
+    gAlertsChanged = false;
+    redraw = true;  // header badge
+  }
+  while (!gAlertPopups.empty()) {
+    const String id = gAlertPopups.front();
+    gAlertPopups.erase(gAlertPopups.begin());
+    for (const WeatherAlert &a : gAlerts) {
+      if (a.id != id) continue;
+      displayNoteActivity();
+      Serial.printf("[Weather] new alert: %s (%s)\n", a.event.c_str(), alertLevelName(a.level));
+      notice("weather-alert", String(alertLevelName(a.level)) + " weather alert\n" + a.event + "\n" + alertWhen(a),
+             LV_SYMBOL_WARNING, alertColor(a.level));
+      redraw = true;
+    }
+  }
+  return redraw;
 }
 
 // --- Device details (home header tap) ------------------------------------------------
@@ -1484,6 +1915,13 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
   if (root) {
     showLinkState(ht, linkState());
     g.status = ht;
+    int maxLv = 0;
+    if (const int n = activeAlertCount(&maxLv)) {  // weather alert badge
+      lv_obj_t *b = lv_label_create(hdr);
+      lv_label_set_text(b, (String(LV_SYMBOL_WARNING " ") + n).c_str());
+      lv_obj_set_style_text_color(b, alertColor(maxLv), 0);
+      lv_obj_align(b, LV_ALIGN_RIGHT_MID, -6, 0);
+    }
   } else {
     lv_label_set_text(ht, (String(LV_SYMBOL_LEFT "  ") + title).c_str());
     lv_obj_set_width(ht, 190);
@@ -1639,6 +2077,7 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
         const bool tasks = pollTileTasks();
         const bool synced = pollSwitchSync();
         pollShortcutPill();
+        if (pollWeatherAlerts()) break;  // new alert shown / badge changed: redraw
         if (pollSceneState() || tasks || switchUndone || synced) break;  // a tile changed: redraw
       }
       if (linkState() != drawnLink) {
@@ -1742,6 +2181,13 @@ void menuSetActiveScenes(JsonArrayConst names) {
   Serial.printf("[Scenes] active: %u\n", (unsigned)gActiveScenes.size());
 }
 
+void menuWeatherAlerts(JsonVariantConst push) {
+  setAlerts(push["alerts"].as<JsonArrayConst>());
+  for (JsonVariantConst id : push["new"].as<JsonArrayConst>()) gAlertPopups.push_back(id | "");
+  Serial.printf("[Weather] alerts pushed: %u active, %u new\n", (unsigned)gAlerts.size(),
+                (unsigned)push["new"].size());
+}
+
 void menuHome() {
   Serial.println("[Menu] home: tap an item to open, swipe left/right to page, swipe down or "
                  "tap the header to go back; encoder +/- selects, 's' opens, 'b' back, "
@@ -1751,6 +2197,11 @@ void menuHome() {
   // Which scene is active, once at boot: the shortcut button's on/off scenes
   // need it before any scenes page has been opened.
   if (netMqttIsConnected()) requestSceneState();
+  // Current weather alerts for the header badge (no page shown).
+  {
+    JsonDocument d;
+    if (weatherAsk("weather", nullptr, d)) setAlerts(d["result"]["alerts"].as<JsonArrayConst>());
+  }
   showLevel(configMenu(), "Menu", true);
 }
 

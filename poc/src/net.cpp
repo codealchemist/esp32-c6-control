@@ -128,7 +128,9 @@ char *gCfgReady = nullptr;  // complete, NUL-terminated, owned by whoever takes 
 // portENTER_CRITICAL section.
 // A small FIFO, not a single slot: a task reply and an echo can arrive back
 // to back, and a slot would silently keep only the last one.
-constexpr size_t kMaxCommandLen = 511;
+// Weather replies run ~700 bytes; commands arrive in one MQTT fragment as
+// long as they fit the client buffer (set to 2 KB in netMqttBegin()).
+constexpr size_t kMaxCommandLen = 1023;
 constexpr uint8_t kCmdQueueLen = 4;
 portMUX_TYPE gCmdMux = portMUX_INITIALIZER_UNLOCKED;
 char gCmdQueue[kCmdQueueLen][kMaxCommandLen + 1];
@@ -352,6 +354,8 @@ bool netMqttBegin(const String &host, uint16_t port, bool useTls, const String &
   // Keep trying while the broker (or Wi-Fi) is away; the panel works offline
   // meanwhile and lights its remote features up again on connect.
   cfg.network.reconnect_timeout_ms = 5000;
+  // Whole commands in one DATA event (only config pushes are reassembled).
+  cfg.buffer.size = 2048;
 
   esp_mqtt_client_handle_t client = esp_mqtt_client_init(&cfg);
   if (!client) return false;

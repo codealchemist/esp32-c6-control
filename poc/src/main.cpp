@@ -335,10 +335,14 @@ uint32_t gLastPublish = 0;
 // online part of appPump().
 bool gOnline = false;
 
-// The latest task_result, held until the waiting task screen claims it by
-// requestId (appTakeTaskResult).
-String gTaskResultId;
-String gTaskResultJson;
+// Replies to menu tasks (task_result), held until whoever waits claims them
+// by requestId (appTakeTaskResult). A few slots, since several tiles can be
+// waiting at once; the oldest is overwritten.
+struct TaskResult {
+  String id, json;
+};
+TaskResult gTaskResults[4];
+size_t gTaskResultNext = 0;
 
 void publishKnob(const char *why) {
   const bool ok = netMqttPublishTelemetry(kKnobComponentId, kKnobEventType, gKnobValue);
@@ -363,10 +367,12 @@ bool onlineService() {
     if (deserializeJson(doc, cmd) != DeserializationError::Ok) {
       gLastCmd = cmd;
       changed = true;
+    } else if (String(doc["action"] | "") == "scene_state") {
+      menuSetActiveScenes(doc["active"].as<JsonArrayConst>());
     } else if (String(doc["action"] | "") == "task_result") {
       // A reply to a menu task (§6.3), matched by requestId by whoever waits.
-      gTaskResultId = doc["correlationId"] | "";
-      gTaskResultJson = cmd;
+      gTaskResults[gTaskResultNext] = {doc["correlationId"] | "", cmd};
+      gTaskResultNext = (gTaskResultNext + 1) % 4;
     } else {
       gLastCmd = String(doc["action"] | "?") + " " + doc["value"].as<String>();
       changed = true;
@@ -431,11 +437,14 @@ void appPump() {
 }
 
 bool appTakeTaskResult(const String &requestId, String &resultJson) {
-  if (gTaskResultId.isEmpty() || gTaskResultId != requestId) return false;
-  resultJson = gTaskResultJson;
-  gTaskResultId = "";
-  gTaskResultJson = "";
-  return true;
+  for (TaskResult &r : gTaskResults) {
+    if (!r.id.isEmpty() && r.id == requestId) {
+      resultJson = r.json;
+      r = {};
+      return true;
+    }
+  }
+  return false;
 }
 
 void setup() {

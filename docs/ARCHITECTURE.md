@@ -269,6 +269,22 @@ provisioned to NVS separately, never stored in the JSON config alongside
   contents (§6.3); `false` (the default) means fire-and-forget — the
   device shows a local "sent" acknowledgment immediately and never waits
   or times out.
+- **Task feedback on the tile.** Every `task` runs from its menu tile: any
+  adjustable params open their editor first, then the grid returns and a
+  small spinner at the tile's top-right shows the reply is pending; it turns
+  into a green check or red cross for 3 s (no reply in 5 s = cross).
+  Fire-and-forget tasks show the check once sent. Message text goes to the
+  log, not the screen.
+- **Active scene.** Tasks whose payload names a `tuyaScene` get a lit tile
+  while that scene is active. Tuya has no notion of a current scene, so the
+  Core learns one: 10 s after a scene runs (cancelled if another scene runs
+  first) it stores the states of the scene's lights as its fingerprint. When
+  a page with scene tiles opens, the panel asks (a `scene-state` task) and
+  the Core answers `{ action: "scene_state", active: [<lowercase names>] }`
+  on the commands topic: the scene that ran in the last 30 s, otherwise the
+  scenes whose fingerprints match the lights now. A successful scene run
+  lights its tile immediately; nothing re-checks until the page is opened
+  again (no polling, no pushes).
 - **`switch`** — leaf with two states, on and off, shown as a toggle on its
   menu item (icon lit when on). Each tap flips it and publishes a task
   exactly like `task` does (§6.3), with `switch.payload` plus

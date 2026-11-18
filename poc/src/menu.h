@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include <ArduinoJson.h>
+
 #include <functional>
 
 // The config-driven menu (docs/ARCHITECTURE.md §5.2, §6): renders the active
@@ -18,3 +20,7 @@ void menuHome(std::function<String()> statusText);
 // supplies the grey line under the value while nothing is pending.
 bool uiEditInt(const String &title, int &value, int minValue, int maxValue, int step,
                int initialSteps = 0, std::function<String()> footer = nullptr);
+
+// The Core's scene_state command: which Tuya scenes (lowercase names) are
+// active right now. Tiles running one of them are highlighted.
+void menuSetActiveScenes(JsonArrayConst names);

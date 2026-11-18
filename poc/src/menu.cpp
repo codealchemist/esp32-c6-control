@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
+#include <vector>
+
 #include <functional>
 
 #include "app.h"
@@ -147,60 +149,194 @@ bool publishTask(JsonObjectConst node, JsonObjectConst spec, JsonObjectConst ext
   return sent;
 }
 
-void runTask(JsonObjectConst node) {
-  const char *id = node["id"] | "?";
-  const char *label = node["label"] | id;
-  JsonObjectConst task = node["task"];
 
+// --- In-tile task runs ------------------------------------------------------------
+//
+// Every task (a button that fires a remote action, §6.3) runs from its tile:
+// no result screen. Adjustable params are asked first in their editor, then
+// the grid comes back. A small spinner
+// appears at the tile's top-right while the reply is due, then a green check
+// or a red cross for a few seconds. Fire-and-forget tasks go straight to the
+// check once sent. Details (the Core's message) go to the serial log.
+
+constexpr uint32_t kBadgeShowMs = 3000;
+
+struct TaskBadge {
+  enum State { None, Busy, Ok, Error } state = None;
+  String id, requestId;
+  String scene;        // the task's tuyaScene (lowercase), if any
+  uint32_t until = 0;  // Busy: reply deadline; Ok/Error: when to clear
+};
+
+void markSceneActive(const String &scene);
+TaskBadge gBadges[4];
+
+TaskBadge *badgeFor(const char *id) {
+  for (TaskBadge &b : gBadges) {
+    if (b.state != TaskBadge::None && b.id == id) return &b;
+  }
+  return nullptr;
+}
+
+TaskBadge &newBadge(const char *id) {
+  if (TaskBadge *b = badgeFor(id)) return *b;
+  for (TaskBadge &b : gBadges) {
+    if (b.state == TaskBadge::None) return b;
+  }
+  for (TaskBadge &b : gBadges) {  // all taken: reuse one that isn't waiting
+    if (b.state != TaskBadge::Busy) return b;
+  }
+  return gBadges[0];
+}
+
+void setBadge(TaskBadge &b, TaskBadge::State st, const char *why) {
+  b.state = st;
+  b.until = millis() + kBadgeShowMs;
+  Serial.printf("[Task] %s: %s%s%s\n", b.id.c_str(), st == TaskBadge::Ok ? "done" : "FAILED",
+                why && *why ? " - " : "", why ? why : "");
+}
+
+
+void startTileTask(JsonObjectConst node) {
+  const char *id = node["id"] | "?";
+  if (TaskBadge *b = badgeFor(id); b && b->state == TaskBadge::Busy) {
+    Serial.printf("[Task] %s: still waiting for the last reply - ignored\n", id);
+    return;
+  }
+  JsonObjectConst task = node["task"];
+  // Adjustable params open their editor first (then back to the grid);
+  // the rest travel at their default. Cancelling sends nothing.
   JsonDocument params;
   if (!collectParams(node, params.to<JsonObject>())) return;
 
+  TaskBadge &b = newBadge(id);
+  b = {};
+  b.id = id;
+  b.scene = task["payload"]["tuyaScene"] | "";
+  b.scene.trim();
+  b.scene.toLowerCase();
   // §6.3: no queue/replay — a stale "lights on" sent on reconnect would be
   // worse than saying it didn't go out.
   if (!netMqttIsConnected()) {
-    notice("task-offline", String(label) + "\nNot sent: offline", LV_SYMBOL_CLOSE,
-           lv_palette_main(LV_PALETTE_RED));
+    setBadge(b, TaskBadge::Error, "offline, not sent");
     return;
   }
-
   String requestId;
-  const bool expectsResult = task["expectsResult"] | false;
   if (!publishTask(node, task, params.as<JsonObjectConst>(), requestId)) {
-    notice("task-failed", String(label) + "\nNot sent", LV_SYMBOL_CLOSE,
-           lv_palette_main(LV_PALETTE_RED));
+    setBadge(b, TaskBadge::Error, "not sent");
     return;
   }
+  if (task["expectsResult"] | false) {
+    b.state = TaskBadge::Busy;
+    b.requestId = requestId;
+    b.until = millis() + kResultTimeoutMs;
+  } else {
+    setBadge(b, TaskBadge::Ok, "sent");
+  }
+}
 
-  if (!expectsResult) {
-    // Fire-and-forget: acknowledge locally right away, no waiting (§5.2).
-    toast("task-sent", String(label) + "\nSent", LV_SYMBOL_OK, lv_palette_main(LV_PALETTE_GREEN));
+// Menu loop hook. True when a badge changed and the grid must be redrawn.
+bool pollTileTasks() {
+  bool changed = false;
+  for (TaskBadge &b : gBadges) {
+    if (b.state == TaskBadge::Busy) {
+      String json;
+      if (appTakeTaskResult(b.requestId, json)) {
+        JsonDocument r;
+        deserializeJson(r, json);
+        const bool ok = String(r["result"]["status"] | "ok") == "ok";
+        const String msg = r["result"]["message"] | "";
+        setBadge(b, ok ? TaskBadge::Ok : TaskBadge::Error, msg.c_str());
+        // The scene just ran: light its tile together with the check, not
+        // when the Core's next scene_state arrives (it confirms or corrects
+        // this a few seconds later, once it has read the lights back).
+        if (ok && !b.scene.isEmpty()) markSceneActive(b.scene);
+        changed = true;
+      } else if ((int32_t)(millis() - b.until) >= 0) {
+        setBadge(b, TaskBadge::Error, "no reply within 5s");
+        changed = true;
+      }
+    } else if (b.state != TaskBadge::None && (int32_t)(millis() - b.until) >= 0) {
+      b.state = TaskBadge::None;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// The badge itself, at a tile's top-right corner.
+void drawBadge(lv_obj_t *cell, const TaskBadge &b) {
+  constexpr int32_t kSize = 26;
+  if (b.state == TaskBadge::Busy) {
+    lv_obj_t *sp = lv_spinner_create(cell);
+    lv_spinner_set_anim_params(sp, 900, 240);
+    lv_obj_set_size(sp, kSize, kSize);
+    lv_obj_set_style_arc_width(sp, 4, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(sp, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(sp, lv_color_hex(0x3A3A3A), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(sp, lv_palette_main(LV_PALETTE_BLUE), LV_PART_INDICATOR);
+    lv_obj_remove_flag(sp, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(sp, LV_ALIGN_TOP_RIGHT, -6, 6);
     return;
   }
+  const bool ok = b.state == TaskBadge::Ok;
+  lv_obj_t *dot = lv_obj_create(cell);
+  lv_obj_remove_style_all(dot);
+  lv_obj_set_size(dot, kSize, kSize);
+  lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(dot, lv_palette_main(ok ? LV_PALETTE_GREEN : LV_PALETTE_RED), 0);
+  lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_align(dot, LV_ALIGN_TOP_RIGHT, -6, 6);
+  lv_obj_t *mark = lv_label_create(dot);
+  lv_label_set_text(mark, ok ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE);
+  lv_obj_set_style_text_font(mark, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(mark, lv_color_white(), 0);
+  lv_obj_center(mark);
+}
 
-  uiShow("task-wait", (String(label) + "\nWaiting for result...").c_str(), LV_SYMBOL_REFRESH,
-         lv_palette_main(LV_PALETTE_BLUE));
-  const uint32_t start = millis();
-  String resultJson;
-  while (millis() - start < kResultTimeoutMs) {
-    appPump();
-    inputPoll();  // keep the input queue drained; waiting is not cancellable
-    if (appTakeTaskResult(requestId, resultJson)) break;
-    delay(5);
-  }
-  if (resultJson.isEmpty()) {
-    Serial.println("[Task] " + requestId + ": no result within 5s");
-    notice("task-timeout", String(label) + "\nNo result (timeout)", LV_SYMBOL_WARNING,
-           lv_palette_main(LV_PALETTE_AMBER));
-    return;
-  }
+// --- Active scenes ---------------------------------------------------------------
+//
+// The Core tells the panel which Tuya scenes are active (scene_state command,
+// lowercase scene names; see core-server-poc menu-tasks/tuya.js for how it
+// knows). Tiles whose task payload names one of them as `tuyaScene` get a
+// lit background. The panel asks only when a page with scene tiles opens;
+// after a scene runs, its success reply lights the tile right away and
+// nothing re-checks until the page is opened again.
 
-  JsonDocument r;
-  deserializeJson(r, resultJson);
-  const bool ok = String(r["result"]["status"] | "ok") == "ok";
-  const String message = r["result"]["message"] | (ok ? "Done" : "Failed");
-  Serial.println("[Task] " + requestId + " result: " + message);
-  notice("task-result", String(label) + "\n" + message, ok ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE,
-         lv_palette_main(ok ? LV_PALETTE_GREEN : LV_PALETTE_RED));
+std::vector<String> gActiveScenes;
+bool gActiveScenesChanged = false;
+
+void markSceneActive(const String &scene) {
+  gActiveScenes.assign(1, scene);  // scenes set the same lights: one at a time
+  gActiveScenesChanged = true;
+}
+
+bool sceneActive(JsonObjectConst node) {
+  if (String(node["type"] | "") != "task") return false;
+  String name = node["task"]["payload"]["tuyaScene"] | "";
+  name.trim();
+  name.toLowerCase();
+  if (name.isEmpty()) return false;
+  for (const String &a : gActiveScenes) {
+    if (a == name) return true;
+  }
+  return false;
+}
+
+void requestSceneState() {
+  JsonDocument node, spec;
+  node["id"] = "scene-state";
+  spec["payload"]["taskId"] = "scene-state";
+  spec["qos"] = 0;
+  String requestId;
+  publishTask(node.as<JsonObjectConst>(), spec.as<JsonObjectConst>(), JsonObjectConst(), requestId);
+}
+
+bool pollSceneState() {
+  if (!gActiveScenesChanged) return false;
+  gActiveScenesChanged = false;
+  return true;
 }
 
 // --- Switches (§5.2 `switch`) ------------------------------------------------------
@@ -676,6 +812,10 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(cell, lv_color_hex(0x1C1C1C), 0);
     lv_obj_set_style_bg_color(cell, lv_color_hex(0x3A3A3A), LV_STATE_PRESSED);
+    if (sceneActive(node)) {  // the scene the lights are in right now
+      lv_obj_set_style_bg_color(cell, lv_color_hex(0x5A4300), 0);
+      lv_obj_set_style_bg_color(cell, lv_color_hex(0x7A5C00), LV_STATE_PRESSED);
+    }
     if (static_cast<int>(idx) == selected) {
       lv_obj_set_style_border_width(cell, 2, 0);
       lv_obj_set_style_border_color(cell, lv_palette_main(LV_PALETTE_BLUE), 0);
@@ -741,6 +881,8 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
       lv_obj_set_height(name, (isSwitch ? 1 : 2) * lv_font_get_line_height(&lv_font_montserrat_20));
     }
     lv_obj_align(name, LV_ALIGN_TOP_MID, 0, isSwitch ? 64 : top + 64 + 8);
+
+    if (const TaskBadge *b = badgeFor(node["id"] | "")) drawBadge(cell, *b);
   }
   return g;
 }
@@ -760,6 +902,13 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root,
   // paging slides with the swipe, coming back from a folder slides from the left.
   lv_screen_load_anim_t anim = root ? LV_SCREEN_LOAD_ANIM_NONE : LV_SCREEN_LOAD_ANIM_MOVE_LEFT;
   const size_t pages = n ? (n + 1) / 2 : 1;
+  // Opening a page with scene tiles: ask the Core which scene is active.
+  for (JsonObjectConst node : nodes) {
+    if (!String(node["task"]["payload"]["tuyaScene"] | "").isEmpty()) {
+      requestSceneState();
+      break;
+    }
+  }
   while (true) {
     gTappedCell = -1;
     gGestured = false;
@@ -772,7 +921,11 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root,
     while (ev == InputEvent::None) {
       appPump();
       ev = inputPoll();
-      if (ev == InputEvent::None && pollSwitchReply()) break;  // undone: redraw
+      if (ev == InputEvent::None) {
+        const bool switchUndone = pollSwitchReply();
+        const bool tasks = pollTileTasks();
+        if (pollSceneState() || tasks || switchUndone) break;  // a tile changed: redraw
+      }
       if (root && g.status && netMqttIsConnected() != wasOnline) {
         wasOnline = !wasOnline;
         lv_label_set_text(g.status, (String(LV_SYMBOL_WIFI "  ") + connectionText()).c_str());
@@ -840,7 +993,7 @@ void openNode(JsonObjectConst node, const String &path) {
   const String label = node["label"] | "";
   Serial.println("[Menu] open " + String(node["id"] | "?") + " (" + type + ")");
   if (type == "task") {
-    runTask(node);
+    startTileTask(node);
   } else if (type == "switch") {
     toggleSwitch(node);
   } else if (type == "action") {
@@ -856,6 +1009,18 @@ void openNode(JsonObjectConst node, const String &path) {
 }
 
 } // namespace
+
+void menuSetActiveScenes(JsonArrayConst names) {
+  gActiveScenes.clear();
+  for (JsonVariantConst n : names) {
+    String v = n | "";
+    v.trim();
+    v.toLowerCase();
+    if (!v.isEmpty()) gActiveScenes.push_back(v);
+  }
+  gActiveScenesChanged = true;
+  Serial.printf("[Scenes] active: %u\n", (unsigned)gActiveScenes.size());
+}
 
 void menuHome(std::function<String()> statusText) {
   Serial.println("[Menu] home: tap an item to open, swipe left/right to page, swipe down or "

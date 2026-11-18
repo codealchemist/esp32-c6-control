@@ -2,6 +2,8 @@
 
 #include <ArduinoJson.h>
 
+#include <functional>
+
 #include "app.h"
 #include "config_store.h"
 #include "input.h"
@@ -202,10 +204,220 @@ void runAction(JsonObjectConst node) {
 
 // --- Navigation (§6.2 NAVIGATE) ------------------------------------------------
 //
-// One item per page: icon + label on top (tap = open), Back | Next below.
-// Encoder: turn = next/previous, push = open. BOOT = back.
+// Two items per page, one per screen half: big icon on top, label below.
+// Touch: tap an item to open it, swipe left/right to page, swipe down (or tap
+// the "< Folder" header) to go back. Encoder: turn moves a highlighted
+// selection item by item, push opens it. BOOT = back. The root level is the
+// home screen: it never closes, and its header shows the connection state
+// (tap it for details).
 
-void showLevel(JsonArrayConst nodes, const String &path);
+void openNode(JsonObjectConst node, const String &path);
+
+constexpr int32_t kW = 320;
+constexpr int32_t kH = 172;
+constexpr int32_t kHeaderH = 30;
+constexpr int32_t kCellM = 4;
+
+// Touch state for the current grid screen. A swipe starts with a press on a
+// cell, so LVGL may still report a click on release; a detected gesture
+// marks the press as used up.
+int gTappedCell = -1;
+bool gGestured = false;
+
+void onCellPressed(lv_event_t *) { gGestured = false; }
+
+void onCellClicked(lv_event_t *e) {
+  if (gGestured) return;
+  gTappedCell = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  inputInject(InputEvent::EncoderPressShort);
+}
+
+void onGesture(lv_event_t *) {
+  const lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+  gGestured = true;
+  if (dir == LV_DIR_LEFT) inputInject(InputEvent::EncoderCW);         // next page
+  else if (dir == LV_DIR_RIGHT) inputInject(InputEvent::EncoderCCW);  // previous page
+  else if (dir == LV_DIR_BOTTOM) inputInject(InputEvent::ButtonPressShort);  // back
+  else return;
+  lv_indev_wait_release(lv_indev_active());
+}
+
+void onHeaderClicked(lv_event_t *e) {
+  inputInject(static_cast<InputEvent>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e))));
+}
+
+String connectionText() { return netMqttIsConnected() ? "Online" : "Offline"; }
+
+struct Grid {
+  lv_obj_t *status = nullptr;  // root only: connection label
+};
+
+Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &title, bool root) {
+  const size_t n = nodes.size();
+  const size_t pages = (n + 1) / 2;
+  Grid g;
+  lv_obj_t *scr = uiBlankScreen(root ? "home" : "menu");
+  lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);
+
+  // Header: connection state (root) or "< Folder" (back), page dots right.
+  lv_obj_t *hdr = lv_obj_create(scr);
+  lv_obj_remove_style_all(hdr);
+  lv_obj_set_pos(hdr, 0, 0);
+  lv_obj_set_size(hdr, 200, kHeaderH);
+  lv_obj_add_flag(hdr, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_bg_color(hdr, lv_palette_main(LV_PALETTE_GREY), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(hdr, LV_OPA_30, LV_STATE_PRESSED);
+  lv_obj_set_style_radius(hdr, 8, 0);
+  lv_obj_add_event_cb(hdr, onHeaderClicked, LV_EVENT_CLICKED,
+                      reinterpret_cast<void *>(static_cast<intptr_t>(
+                          root ? InputEvent::SecondaryAction : InputEvent::ButtonPressShort)));
+  lv_obj_t *ht = lv_label_create(hdr);
+  if (root) {
+    const bool on = netMqttIsConnected();
+    lv_label_set_text(ht, (String(LV_SYMBOL_WIFI "  ") + connectionText()).c_str());
+    lv_obj_set_style_text_color(ht, lv_palette_main(on ? LV_PALETTE_GREEN : LV_PALETTE_RED), 0);
+    g.status = ht;
+  } else {
+    lv_label_set_text(ht, (String(LV_SYMBOL_LEFT "  ") + title).c_str());
+    lv_obj_set_width(ht, 190);
+    lv_label_set_long_mode(ht, LV_LABEL_LONG_DOT);
+  }
+  lv_obj_align(ht, LV_ALIGN_LEFT_MID, 8, 0);
+
+  if (pages > 1) {
+    constexpr int32_t kDot = 7, kGap = 6;
+    for (size_t i = 0; i < pages; i++) {
+      lv_obj_t *d = lv_obj_create(scr);
+      lv_obj_remove_style_all(d);
+      lv_obj_set_size(d, kDot, kDot);
+      lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+      lv_obj_set_style_bg_color(d, i == page ? lv_color_white() : lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+      lv_obj_set_pos(d, kW - 10 - (pages - i) * (kDot + kGap) + kGap, (kHeaderH - kDot) / 2);
+    }
+  }
+
+  // The two cells.
+  const int32_t cellW = kW / 2 - 2 * kCellM;
+  const int32_t cellH = kH - kHeaderH - kCellM;
+  for (size_t c = 0; c < 2; c++) {
+    const size_t idx = page * 2 + c;
+    if (idx >= n) break;
+    JsonObjectConst node = nodes[idx];
+    lv_obj_t *cell = lv_obj_create(scr);
+    lv_obj_remove_style_all(cell);
+    lv_obj_set_pos(cell, c * (kW / 2) + kCellM, kHeaderH);
+    lv_obj_set_size(cell, cellW, cellH);
+    lv_obj_remove_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(cell, 12, 0);
+    lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(cell, lv_color_hex(0x1C1C1C), 0);
+    lv_obj_set_style_bg_color(cell, lv_color_hex(0x3A3A3A), LV_STATE_PRESSED);
+    if (static_cast<int>(idx) == selected) {
+      lv_obj_set_style_border_width(cell, 2, 0);
+      lv_obj_set_style_border_color(cell, lv_palette_main(LV_PALETTE_BLUE), 0);
+    }
+    lv_obj_add_event_cb(cell, onCellPressed, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(cell, onCellClicked, LV_EVENT_CLICKED,
+                        reinterpret_cast<void *>(static_cast<intptr_t>(idx)));
+
+    lv_obj_t *icon = lv_label_create(cell);
+    lv_label_set_text(icon, nodeSymbol(node));
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 16);
+
+    const String label = node["label"] | "?";
+    lv_obj_t *name = lv_label_create(cell);
+    lv_label_set_text(name, label.c_str());
+    // Short labels at 28px; longer ones at 20px over up to two lines.
+    const bool big = label.length() <= 9;
+    lv_obj_set_style_text_font(name, big ? &lv_font_montserrat_28 : &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(name, cellW - 12);
+    if (!big) {
+      lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+      lv_obj_set_height(name, 2 * lv_font_get_line_height(&lv_font_montserrat_20));
+    }
+    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 16 + 48 + 10);
+  }
+  return g;
+}
+
+// Shows one level until the user backs out. The root level never returns.
+void showLevel(JsonArrayConst nodes, const String &title, bool root,
+               const std::function<String()> &statusText) {
+  const size_t n = nodes.size();
+  if (n == 0 && !root) {
+    notice("menu-empty", title + "\n(empty)", LV_SYMBOL_DIRECTORY, lv_color_white());
+    return;
+  }
+
+  size_t page = 0;
+  int selected = -1;  // encoder highlight; touch use leaves it off
+  const size_t pages = n ? (n + 1) / 2 : 1;
+  while (true) {
+    gTappedCell = -1;
+    gGestured = false;
+    Grid g = drawGrid(nodes, page, selected, title, root);
+    if (n == 0) uiShow("home-empty", "No menu items\nin the active config", LV_SYMBOL_LIST);
+    bool wasOnline = netMqttIsConnected();
+
+    InputEvent ev = InputEvent::None;
+    while (ev == InputEvent::None) {
+      appPump();
+      ev = inputPoll();
+      if (root && g.status && netMqttIsConnected() != wasOnline) {
+        wasOnline = !wasOnline;
+        lv_label_set_text(g.status, (String(LV_SYMBOL_WIFI "  ") + connectionText()).c_str());
+        lv_obj_set_style_text_color(
+            g.status, lv_palette_main(wasOnline ? LV_PALETTE_GREEN : LV_PALETTE_RED), 0);
+      }
+      delay(5);
+    }
+    const bool touched = gTappedCell >= 0;
+    switch (ev) {
+      case InputEvent::EncoderCW:
+      case InputEvent::EncoderCCW: {
+        if (n == 0) break;
+        const bool fwd = ev == InputEvent::EncoderCW;
+        if (gGestured) {  // swipe: whole page
+          page = fwd ? (page + 1) % pages : (page + pages - 1) % pages;
+          selected = -1;
+          Serial.printf("[Menu] swipe -> page %u/%u\n", page + 1, pages);
+        } else {          // encoder: item by item
+          selected = selected < 0 ? static_cast<int>(page * 2)
+                                  : (fwd ? (selected + 1) % n : (selected + n - 1) % n);
+          page = selected / 2;
+        }
+        break;
+      }
+      case InputEvent::EncoderPressShort: {
+        if (n == 0) break;
+        const int idx = touched ? gTappedCell : (selected >= 0 ? selected : page * 2);
+        if (!touched) selected = idx;
+        openNode(nodes[idx], title);  // then redraw this level
+        break;
+      }
+      case InputEvent::ButtonPressShort:
+      case InputEvent::ButtonPressLong:
+        if (!root) return;
+        page = 0;  // home: back = first page
+        selected = -1;
+        break;
+      case InputEvent::SecondaryAction:
+        if (root && statusText) {
+          notice("status", connectionText() + "\n" + statusText(),
+                 netMqttIsConnected() ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING,
+                 lv_palette_main(netMqttIsConnected() ? LV_PALETTE_GREEN : LV_PALETTE_RED));
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
 
 void openNode(JsonObjectConst node, const String &path) {
   const String type = node["type"] | "";
@@ -220,75 +432,18 @@ void openNode(JsonObjectConst node, const String &path) {
       notice("inbox", label + "\nNo messages\n(inbox not built yet)", LV_SYMBOL_ENVELOPE,
              lv_color_white());
     } else {
-      showLevel(node["children"].as<JsonArrayConst>(), path + " / " + label);
-    }
-  }
-}
-
-void showLevel(JsonArrayConst nodes, const String &path) {
-  const size_t n = nodes.size();
-  if (n == 0) {
-    notice("menu-empty", path + "\n(empty)", LV_SYMBOL_DIRECTORY, lv_color_white());
-    return;
-  }
-
-  size_t index = 0;
-  while (true) {
-    JsonObjectConst node = nodes[index];
-    UiView v = uiShow("menu", nullptr, nodeSymbol(node), lv_color_white(),
-                      {{LV_SYMBOL_LEFT " Back", InputEvent::ButtonPressShort},
-                       {"Next " LV_SYMBOL_RIGHT, InputEvent::EncoderCW}});
-    uiSetContentAction(v, InputEvent::EncoderPressShort);
-
-    lv_obj_t *where = lv_label_create(v.content);
-    lv_label_set_text(where, (path + "  " + String(index + 1) + "/" + String(n)).c_str());
-    lv_obj_set_style_text_color(where, lv_palette_main(LV_PALETTE_GREY), 0);
-    lv_obj_set_width(where, LV_PCT(100));
-    lv_label_set_long_mode(where, LV_LABEL_LONG_DOT);
-    lv_obj_align(where, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    const String label = node["label"] | "?";
-    lv_obj_t *name = lv_label_create(v.content);
-    lv_label_set_text(name, label.c_str());
-    // Short labels at 28px; long ones at 20 so they still fit on one line.
-    lv_obj_set_style_text_font(name, label.length() <= 12 ? &lv_font_montserrat_28
-                                                          : &lv_font_montserrat_20, 0);
-    lv_obj_set_width(name, LV_PCT(100));
-    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, 0);
-
-    const String type = node["type"] | "";
-    lv_obj_t *hint = lv_label_create(v.content);
-    lv_label_set_text(hint, type == "folder" ? "Tap to open" : type == "task" ? "Tap to send"
-                                                                              : "Tap to run");
-    lv_obj_set_style_text_color(hint, lv_palette_main(LV_PALETTE_GREY), 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-
-    InputEvent ev = InputEvent::None;
-    while (ev == InputEvent::None) {
-      appPump();
-      ev = inputPoll();
-      delay(5);
-    }
-    if (ev == InputEvent::EncoderCW) {
-      index = (index + 1) % n;
-    } else if (ev == InputEvent::EncoderCCW) {
-      index = (index + n - 1) % n;
-    } else if (ev == InputEvent::EncoderPressShort) {
-      openNode(node, path);  // then redraw this level
-    } else if (ev == InputEvent::ButtonPressShort || ev == InputEvent::ButtonPressLong) {
-      return;  // back
+      showLevel(node["children"].as<JsonArrayConst>(), label, false, nullptr);
     }
   }
 }
 
 } // namespace
 
-void menuRun() {
-  Serial.println("[Menu] tap the item (or encoder push) to open; Next / turn to move; "
-                 "Back / BOOT to go back");
-  showLevel(configMenu(), "Menu");
-  Serial.println("[Menu] closed");
+void menuHome(std::function<String()> statusText) {
+  Serial.println("[Menu] home: tap an item to open, swipe left/right to page, swipe down or "
+                 "tap the header to go back; encoder +/- selects, 's' opens, 'b' back, "
+                 "'a' shows status");
+  showLevel(configMenu(), "Menu", true, statusText);
 }
 
 bool uiEditInt(const String &title, int &value, int minValue, int maxValue, int step,

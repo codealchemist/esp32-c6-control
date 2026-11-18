@@ -5,9 +5,11 @@
 #include <functional>
 
 // The config-driven menu (docs/ARCHITECTURE.md §5.2, §6): renders the active
-// config's node tree, runs tasks (publishing them to the Core) and local
-// actions. Returns when the user backs out of the root level.
-void menuRun();
+// config's node tree, two items per page, runs tasks (publishing them to the
+// Core) and local actions. This is the home screen while online: it never
+// returns. `statusText` supplies the details shown when the connection
+// header is tapped.
+void menuHome(std::function<String()> statusText);
 
 // Generic int edit (§5.2.1 `int`): -/+ change a pending value shown on
 // screen; tap the value area (or encoder push) sets it, BOOT or 5s idle

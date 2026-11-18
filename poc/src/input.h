@@ -15,8 +15,6 @@ enum class InputEvent {
   // The second on-screen action button (UI rule: at most two per screen).
   // Touch-only; what it means is up to the screen showing it.
   SecondaryAction,
-  // Touch-only: open the config-driven menu (status screen).
-  OpenMenu,
 };
 
 void inputInit();

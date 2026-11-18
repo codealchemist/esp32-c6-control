@@ -68,15 +68,13 @@ void serialCommandPoll() {
     // Serial stand-ins for the encoder, BOOT and touch actions, so every
     // screen is drivable from a console on boards without input wired:
     //   + / -  encoder turn      s  encoder push (open / set)
-    //   b      BOOT (back)       a  Adjust        m  Menu
+    //   b      BOOT (back)       a  home: connection details
     if (c == '+') {
       inputInject(InputEvent::EncoderCW);
     } else if (c == '-') {
       inputInject(InputEvent::EncoderCCW);
     } else if (c == 'a' || c == 'A') {
       inputInject(InputEvent::SecondaryAction);
-    } else if (c == 'm' || c == 'M') {
-      inputInject(InputEvent::OpenMenu);
     } else if (c == 'b' || c == 'B') {
       inputInject(InputEvent::ButtonPressShort);
     } else if (c == 's' || c == 'S') {
@@ -387,23 +385,9 @@ bool onlineService() {
   return changed;
 }
 
-// The knob: the generic int editor (menu.cpp's uiEditInt — -/+ pending,
-// tap the value to set, BOOT or 5s idle cancels), publishing only on a set
-// that changed the value. Partial edits never reach the Core (§5.2.1).
-void showKnobScreen(int initialSteps = 0) {
-  int v = gKnobValue;
-  const bool set = uiEditInt("Knob", v, -9999, 9999, 1, initialSteps,
-                             []() { return "Core: " + gLastCmd; });
-  if (set && v != gKnobValue) {
-    gKnobValue = v;
-    publishKnob("set");
-  }
-}
-
-// Shows the Wi-Fi/MQTT result (docs/POC.md §2 step 8). Offline: one action
-// (OK). Online: three — Menu (the config-driven menu), Adjust (the knob),
-// OK (continue); this is also where the device sits while connected. Its
-// text can overflow the top area — tap it to read it all.
+// Shows the Wi-Fi/MQTT result (docs/POC.md §2 step 8). Offline: the result
+// with OK (retry from the top). Online: the config menu is the home screen
+// and stays up; its connection header shows this summary when tapped.
 void showStatusScreen(const String &summary, bool wifiConnected, bool online = false) {
   const char *symbol = wifiConnected ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING;
   const lv_color_t color = lv_palette_main(wifiConnected ? LV_PALETTE_GREEN : LV_PALETTE_RED);
@@ -415,49 +399,10 @@ void showStatusScreen(const String &summary, bool wifiConnected, bool online = f
     return;
   }
 
-  Serial.println("[Online] Menu ('m') opens the config menu; Adjust ('a', or turn the encoder / "
-                 "'+'/'-') the knob; OK ('s') or BOOT ('b') continues; tap the text to read it all");
   gOnline = true;
   publishKnob("initial");
-
-  while (true) {
-    UiView v = uiShow("status-online", "", symbol, color,
-                      {{"Menu", InputEvent::OpenMenu},
-                       {"Adjust", InputEvent::SecondaryAction},
-                       {"OK", InputEvent::EncoderPressShort}});
-    auto refresh = [&]() {
-      uiSetText(v, "Knob " + String(gKnobValue) + (netMqttIsConnected() ? "" : " (offline)") +
-                       ", Core: " + gLastCmd + "\n" + summary);
-    };
-    refresh();
-
-    // Adjusting always goes through the knob's set/cancel edit, also for an
-    // encoder turn here — nothing is sent without a confirm.
-    int knobSteps = 0;
-    InputEvent next = InputEvent::None;
-    while (next == InputEvent::None) {
-      displayTick();
-      serialCommandPoll();
-      const InputEvent ev = inputPoll();
-      if (ev == InputEvent::EncoderCW) {
-        knobSteps = 1;
-        next = InputEvent::SecondaryAction;
-      } else if (ev == InputEvent::EncoderCCW) {
-        knobSteps = -1;
-        next = InputEvent::SecondaryAction;
-      } else if (ev == InputEvent::SecondaryAction || ev == InputEvent::OpenMenu) {
-        next = ev;
-      } else if (ev != InputEvent::None) {
-        gOnline = false;
-        return;  // OK / BOOT / encoder push: continue
-      }
-      if (onlineService()) refresh();
-      delay(5);
-    }
-    // Then rebuild this screen.
-    if (next == InputEvent::OpenMenu) menuRun();
-    else showKnobScreen(knobSteps);
-  }
+  menuHome([summary]() { return summary + "\nCore: " + gLastCmd; });
+  gOnline = false;
 }
 
 } // namespace

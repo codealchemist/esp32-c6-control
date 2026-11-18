@@ -147,7 +147,8 @@ void mqttEventHandler(void *handler_args, esp_event_base_t base, int32_t event_i
       gMqttConnected = true;
       // Subscriptions do not survive a reconnect on a clean session, so
       // (re)issue them on every CONNECTED, not just the first.
-      esp_mqtt_client_subscribe(event->client, gEchoTopic.c_str(), 1);
+      if (gEchoTopic.length() > 0) esp_mqtt_client_subscribe(event->client, gEchoTopic.c_str(), 1);
+      Serial.println("[MQTT] connected");
       if (gCommandsTopic.length() > 0) {
         esp_mqtt_client_subscribe(event->client, gCommandsTopic.c_str(), 1);
       }
@@ -156,6 +157,7 @@ void mqttEventHandler(void *handler_args, esp_event_base_t base, int32_t event_i
       }
       break;
     case MQTT_EVENT_DISCONNECTED:
+      if (gMqttConnected) Serial.println("[MQTT] disconnected - reconnecting in the background");
       gMqttConnected = false;
       break;
     case MQTT_EVENT_ERROR:
@@ -221,8 +223,13 @@ void mqttEventHandler(void *handler_args, esp_event_base_t base, int32_t event_i
 
 void netMqttStop() {
   if (gClient) {
+    // Stopping a client that is mid-reconnect (broker unreachable) blocks
+    // until its task notices — ~5s, which is the loop watchdog's limit, so
+    // that path rebooted the board. Pause the watchdog for the stop only.
+    disableLoopWDT();
     esp_mqtt_client_stop(gClient);
     esp_mqtt_client_destroy(gClient);
+    enableLoopWDT();
     gClient = nullptr;
   }
   gMqttConnected = false;
@@ -314,6 +321,81 @@ MqttResult netConnectMqttAndTestEcho(const String &host, uint16_t port, bool use
 
   return result;
 }
+
+bool netMqttBegin(const String &host, uint16_t port, bool useTls, const String &clientId,
+                  const String &username, const String &password, const DeviceTopics &t) {
+  // Never two clients at once — see net.h.
+  netMqttStop();
+  if (host.length() == 0 || t.commands.length() == 0 || t.messages.length() == 0) return false;
+
+  gMqttConnected = false;
+  gMqttError = false;
+  gEchoTopic = "";
+  // Topics first: the CONNECTED handler subscribes to them, on the first
+  // connect and every reconnect after.
+  gCommandsTopic = t.commands;
+  gMessagesTopic = t.messages;
+  gConfigTopic = t.config;
+  gResultsTopic = t.commandResults;
+
+  const String uri = String(useTls ? "mqtts://" : "mqtt://") + host + ":" + String(port);
+  esp_mqtt_client_config_t cfg = {};
+  cfg.broker.address.uri = uri.c_str();
+  cfg.credentials.client_id = clientId.c_str();
+  if (username.length() > 0) cfg.credentials.username = username.c_str();
+  if (password.length() > 0) cfg.credentials.authentication.password = password.c_str();
+  if (useTls) {
+    // POC simplification, as in netConnectMqttAndTestEcho().
+    cfg.broker.verification.skip_cert_common_name_check = true;
+    cfg.broker.verification.certificate = nullptr;
+  }
+  // Keep trying while the broker (or Wi-Fi) is away; the panel works offline
+  // meanwhile and lights its remote features up again on connect.
+  cfg.network.reconnect_timeout_ms = 5000;
+
+  esp_mqtt_client_handle_t client = esp_mqtt_client_init(&cfg);
+  if (!client) return false;
+  esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, mqttEventHandler, nullptr);
+  esp_mqtt_client_start(client);
+  gClient = client;
+  Serial.println("[MQTT] client started for " + uri + " (connects/reconnects in the background)");
+  return true;
+}
+
+// Background Wi-Fi: once given the credentials, re-issues the connect every
+// kWifiRetryMs while not connected (the driver's own auto-reconnect only
+// covers drops after a successful connect, not a failed first attempt).
+namespace {
+constexpr uint32_t kWifiRetryMs = 20000;
+String gWifiSsid, gWifiPass;
+uint32_t gWifiLastTry = 0;
+bool gWifiWasConnected = false;
+} // namespace
+
+void netWifiKeepConnected(const String &ssid, const String &password) {
+  gWifiSsid = ssid;
+  gWifiPass = password;
+  gWifiLastTry = millis();
+  gWifiWasConnected = WiFi.status() == WL_CONNECTED;
+  WiFi.setAutoReconnect(true);
+}
+
+void netWifiPoll() {
+  if (gWifiSsid.length() == 0) return;
+  const bool connected = WiFi.status() == WL_CONNECTED;
+  if (connected != gWifiWasConnected) {
+    gWifiWasConnected = connected;
+    Serial.println(connected ? "[Wi-Fi] connected (" + WiFi.localIP().toString() + ")"
+                             : String("[Wi-Fi] lost - retrying in the background"));
+  }
+  if (!connected && millis() - gWifiLastTry >= kWifiRetryMs) {
+    gWifiLastTry = millis();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(gWifiSsid.c_str(), gWifiPass.c_str());  // returns at once
+  }
+}
+
+bool netWifiConnected() { return WiFi.status() == WL_CONNECTED; }
 
 bool netMqttStartDeviceTopics(const DeviceTopics &t) {
   if (!gClient || t.commands.length() == 0 || t.messages.length() == 0) return false;

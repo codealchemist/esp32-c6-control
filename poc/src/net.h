@@ -50,6 +50,21 @@ struct DeviceTopics {
 // topics. Requires a prior successful netConnectMqttAndTestEcho().
 bool netMqttStartDeviceTopics(const DeviceTopics &topics);
 
+// The panel's long-lived client: starts the one MQTT client with the device
+// topics and returns at once. It connects, and reconnects after any drop,
+// by itself (every 5s while the broker or Wi-Fi is away), re-subscribing
+// each time; netMqttIsConnected() tells the current state. False only if the
+// config is unusable.
+bool netMqttBegin(const String &host, uint16_t port, bool useTls, const String &clientId,
+                  const String &username, const String &password, const DeviceTopics &topics);
+
+// Keeps Wi-Fi up in the background after boot: call netWifiKeepConnected()
+// once with the stored credentials, then netWifiPoll() from the main loop
+// (appPump does). Retries every 20s while disconnected.
+void netWifiKeepConnected(const String &ssid, const String &password);
+void netWifiPoll();
+bool netWifiConnected();
+
 // Pops the oldest message received on the commands topic (FIFO of 4; if it
 // overflows, the oldest are dropped).
 bool netMqttTakeCommand(String &payloadOut);

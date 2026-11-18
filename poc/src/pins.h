@@ -36,11 +36,19 @@
 // re-provisioning" gesture only works if BOOT is pressed just after the
 // reset, during the ~2s splash before inputInit() samples it.
 //
-// The KY-040 encoder pins are **NOT CONFIRMED** — placeholders on GPIOs this
-// board leaves free (it uses 1-6, 14, 15, 18-23 for LCD/TF/IMU/touch, and
-// 12/13 for USB). Edit to match your wiring.
+// KY-040 rotary encoder, wired to the board's 22-pin header — see
+// docs/WIRING_ROTARY_ENCODER.md. GPIO10/11 (the old placeholders) are not
+// usable on this board: the ESP32-C6FH8's 32-pin package doesn't bring them
+// out, and the header doesn't have them.
+// The header's free pins are IO7, IO3/IO4 (TF card lines, unused here) and
+// TXD/RXD (UART0, idle because the console is on USB):
+//   - IO3 and IO4 already have 10K pull-ups to 3V3 on the board (R3-R6),
+//     which suits the encoder's active-low outputs — but they are the TF
+//     card's MISO/CS, so no TF card while the encoder is fitted.
+//   - TXD is avoided: the ROM prints boot messages on it, driving the pin
+//     while the encoder contact may be shorting it to GND.
 // =============================================================================
 #define PIN_BUTTON 8       // BOOT button — CONFIRMED
-#define PIN_ENCODER_CLK 10 // KY-040 CLK — CONFIRM
-#define PIN_ENCODER_DT 11  // KY-040 DT — CONFIRM
-#define PIN_ENCODER_SW 7   // KY-040 push-button — CONFIRM
+#define PIN_ENCODER_CLK 3  // KY-040 CLK -> header IO3
+#define PIN_ENCODER_DT 7   // KY-040 DT  -> header IO7
+#define PIN_ENCODER_SW 4   // KY-040 SW  -> header IO4

@@ -375,34 +375,20 @@ void onlineService() {
   }
 }
 
-// Shows the Wi-Fi/MQTT result (docs/POC.md §2 step 8). Offline: the result
-// with OK (retry from the top). Online: the config menu is the home screen
-// and stays up; its connection header opens the device details page.
-void showStatusScreen(const String &summary, bool wifiConnected, bool online = false) {
-  const char *symbol = wifiConnected ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING;
-  const lv_color_t color = lv_palette_main(wifiConnected ? LV_PALETTE_GREEN : LV_PALETTE_RED);
-
-  if (!online) {
-    uiShow("status", summary.c_str(), symbol, color, {{"OK", InputEvent::EncoderPressShort}});
-    // "Any button press" per docs/POC.md §2 step 7.
-    waitForInput(/*acceptAny=*/true);
-    return;
-  }
-
-  gOnline = true;
-  // The phone remote (Volume menu item). BLE comes up only now: provisioning
-  // owns it before this, and starting it once per boot is enough.
-  static String hidName = "Panel-" + WiFi.macAddress().substring(12, 14) +
-                          WiFi.macAddress().substring(15, 17);
-  phoneHidBegin(hidName.c_str());
-  menuHome();
-  gOnline = false;
+// Pairing failed or timed out: say so, then retry pairing (press Retry, or
+// wait 30s).
+void showStatusScreen(const String &summary) {
+  uiShow("status", summary.c_str(), LV_SYMBOL_WARNING, lv_palette_main(LV_PALETTE_RED),
+         {{"Retry", InputEvent::EncoderPressShort}});
+  Serial.println("[Status] retrying in 30s (or press Retry)");
+  waitForInput(/*acceptAny=*/true, InputEvent::None, 30000);
 }
 
 } // namespace
 
 void appPump() {
   displayTick();
+  netWifiPoll();
   phoneHidPoll();
   serialCommandPoll();
   if (gOnline) onlineService();
@@ -423,7 +409,9 @@ bool appTakeTaskResult(const String &requestId, String &resultJson) {
 
 void setup() {
   Serial.begin(115200);
-  delay(2000);
+  // Just long enough for a USB serial monitor to attach and catch the banner;
+  // the screen comes up right after config load.
+  delay(300);
   Serial.println("=== ESP32-C6 Remote Control Panel POC ===");
   Serial.println("[Serial] type 'r' + Enter at any time to clear provisioning "
                   "and restart (re-shows the pairing QR)");
@@ -454,13 +442,21 @@ void setup() {
 }
 
 void loop() {
-  showWelcomeScreen();
-  pumpFor(2000);
-  addIconToWelcomeScreen();
-  pumpFor(2000);
+  // The intro (welcome, device info, About credit) only matters before the
+  // board is paired. Once it is, boot goes straight to connecting: the same
+  // details live on the home screen's device details page, and the Icons8
+  // credit stays reachable under Settings > About (ARCHITECTURE.md §12.1).
+  static bool firstPass = true;
+  if (!provisioningIsProvisioned() && firstPass) {
+    showWelcomeScreen();
+    pumpFor(2000);
+    addIconToWelcomeScreen();
+    pumpFor(2000);
 
-  showDeviceInfoScreen();
-  showAboutScreen();
+    showDeviceInfoScreen();
+    showAboutScreen();
+  }
+  firstPass = false;
 
   MqttProvisionedConfig mqttCfg;
 
@@ -477,7 +473,7 @@ void loop() {
     displaySetBrightness(kBrightnessNormal);
     if (!ok) {
       Serial.println("[Status] Wi-Fi: provisioning failed or timed out");
-      showStatusScreen("Pairing failed\nor timed out", /*wifiConnected=*/false);
+      showStatusScreen("Pairing failed\nor timed out");
       return; // loop() re-enters from the top
     }
   }
@@ -491,52 +487,50 @@ void loop() {
   // nothing at all (see provisioningLoadStoredWifi).
   const WifiCredentials wifiCreds = provisioningLoadStoredWifi();
 
-  // Same spinner on the already-provisioned path: this leg also blocks for
-  // ~15s per attempt, and without it the previous screen just sits there
-  // looking frozen.
+  // First Wi-Fi attempt in the foreground, with the spinner, so a normal boot
+  // reaches the menu already connected. Either way the menu opens after it:
+  // Wi-Fi and the server keep retrying in the background, and what needs the
+  // Core is shown disabled until they're back.
   showConnectingScreen("Connecting to Wi-Fi\n\n" + wifiCreds.ssid);
   WifiResult wifi =
-      netConnectWifi(wifiCreds.ssid, wifiCreds.password, 15000, []() { displayTick(); });
-  // Short lines: at 20px about 28 characters fit across the info area.
-  String summary = wifi.connected ? ("Wi-Fi: " + wifiCreds.ssid + "\nIP: " + wifi.ip)
-                                  : ("Wi-Fi failed:\n" + wifi.errorReason);
+      netConnectWifi(wifiCreds.ssid, wifiCreds.password, 8000, []() { displayTick(); });
   Serial.println("[Status] " + String(wifi.connected ? "Wi-Fi: " + wifiCreds.ssid +
                                                            " - Connected (" + wifi.ip + ")"
-                                                     : "Wi-Fi: Failed (" + wifi.errorReason + ")"));
+                                                     : "Wi-Fi: Failed (" + wifi.errorReason +
+                                                           ") - retrying in the background"));
+  netWifiKeepConnected(wifiCreds.ssid, wifiCreds.password);
 
-  bool online = false;
-  if (wifi.connected && mqttCfg.valid) {
-    showConnectingScreen("Connecting to MQTT\n\n" + mqttCfg.brokerHost);
+  if (mqttCfg.valid) {
     gBrokerHost = mqttCfg.brokerHost;
-    MqttResult mqtt = netConnectMqttAndTestEcho(
-        mqttCfg.brokerHost, mqttCfg.brokerPort, mqttCfg.useTls, mqttCfg.clientId,
-        mqttCfg.username, mqttCfg.password, 15000, []() { displayTick(); });
-    if (mqtt.connected) {
-      DeviceTopics topics;
-      topics.commands = mqttCfg.topicCommands;
-      topics.messages = mqttCfg.topicMessages;
-      topics.config = mqttCfg.topicConfig;
-      topics.commandResults = mqttCfg.topicCommandResults;
-      online = netMqttStartDeviceTopics(topics);
-      if (!online) Serial.println("[MQTT] no commands/messages topics in stored config");
-    }
-    if (mqtt.connected && mqtt.echoOk) {
-      Serial.println("[Status] MQTT: Connected");
-    } else if (mqtt.connected) {
-      summary += "\nMQTT: no echo";
-      Serial.println("[Status] MQTT: Connected, no echo (" + mqtt.errorReason + ")");
-    } else {
-      summary += "\nMQTT failed: " + mqtt.errorReason;
-      Serial.println("[Status] MQTT: Failed (" + mqtt.errorReason + ")");
+    DeviceTopics topics;
+    topics.commands = mqttCfg.topicCommands;
+    topics.messages = mqttCfg.topicMessages;
+    topics.config = mqttCfg.topicConfig;
+    topics.commandResults = mqttCfg.topicCommandResults;
+    if (!netMqttBegin(mqttCfg.brokerHost, mqttCfg.brokerPort, mqttCfg.useTls, mqttCfg.clientId,
+                      mqttCfg.username, mqttCfg.password, topics)) {
+      Serial.println("[MQTT] stored config unusable (no host or topics) - staying offline");
+    } else if (wifi.connected) {
+      // A moment for the usual case, so home opens already online.
+      showConnectingScreen("Connecting to server\n\n" + mqttCfg.brokerHost);
+      const uint32_t start = millis();
+      while (!netMqttIsConnected() && millis() - start < 4000) {
+        displayTick();
+        serialCommandPoll();
+        delay(10);
+      }
+      Serial.println(netMqttIsConnected() ? "[Status] MQTT: Connected"
+                                          : "[Status] MQTT: not reachable yet - retrying in the background");
     }
   } else {
-    summary += "\nMQTT: not attempted";
-    Serial.println("[Status] MQTT: not attempted (Wi-Fi unavailable)");
+    Serial.println("[MQTT] no stored broker config - staying offline");
   }
 
-  showStatusScreen(summary, wifi.connected, online);
-  // The next pass reconnects from scratch; don't leave this client running
-  // alongside it.
-  netMqttStop();
-  // loop() re-enters from the top — docs/POC.md §2 step 8
+  gOnline = true;  // the online services run from here on; they cope with being offline
+  // The phone remote (Volume menu item). BLE comes up only now: provisioning
+  // owns it before this, and starting it once per boot is enough.
+  static String hidName = "Panel-" + WiFi.macAddress().substring(12, 14) +
+                          WiFi.macAddress().substring(15, 17);
+  phoneHidBegin(hidName.c_str());
+  menuHome();  // never returns
 }

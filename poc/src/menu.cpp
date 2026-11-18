@@ -384,8 +384,11 @@ void toggleSwitch(JsonObjectConst node) {
     return;
   }
   if (!netMqttIsConnected()) {
-    notice("switch-offline", label + "\nNot switched: offline", LV_SYMBOL_CLOSE,
-           lv_palette_main(LV_PALETTE_RED));
+    // Dimmed while offline; a tap just says so on the tile.
+    TaskBadge &b = newBadge(id);
+    b = {};
+    b.id = id;
+    setBadge(b, TaskBadge::Error, "offline, not switched");
     return;
   }
   const bool was = switchState(node);
@@ -635,8 +638,12 @@ void volumeScreen(const String &label) {
       wasPaired = paired;
       wasOnline = online;
       gVol.hintDirty = false;
+      // Computer goes through the Core: offline, the switch can't move to it
+      // (it can still move back to the phone).
+      if (phone && !online) lv_obj_add_state(gVol.toggle, LV_STATE_DISABLED);
+      else lv_obj_remove_state(gVol.toggle, LV_STATE_DISABLED);
       if (phone && !paired) showHint(String("Pair '") + phoneHidName() + "' on your phone");
-      else if (!phone && !online) showHint("Offline - not sent");
+      else if (!phone && !online) showHint("No server - computer volume unavailable");
       else lv_obj_add_flag(gVol.hint, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -1043,7 +1050,31 @@ bool isFolder(JsonObjectConst n) {
   return String(n["type"] | "") == "folder" && String(n["binding"] | "") != "message_inbox";
 }
 
-String connectionText() { return netMqttIsConnected() ? "Online" : "Offline"; }
+// What the home header shows: the server link needs Wi-Fi first, so a lost
+// Wi-Fi reads as "No Wi-Fi" rather than "No server".
+enum class Link { Online, NoServer, NoWifi };
+
+Link linkState() {
+  if (netMqttIsConnected()) return Link::Online;
+  return netWifiConnected() ? Link::NoServer : Link::NoWifi;
+}
+
+void showLinkState(lv_obj_t *label, Link l) {
+  const char *text = l == Link::Online   ? LV_SYMBOL_WIFI "  Online"
+                     : l == Link::NoServer ? LV_SYMBOL_WIFI "  No server"
+                                           : LV_SYMBOL_WARNING "  No Wi-Fi";
+  const lv_palette_t c = l == Link::Online ? LV_PALETTE_GREEN
+                         : l == Link::NoServer ? LV_PALETTE_AMBER
+                                               : LV_PALETTE_RED;
+  lv_label_set_text(label, text);
+  lv_obj_set_style_text_color(label, lv_palette_main(c), 0);
+}
+
+// Tiles that need the Core (tasks, switches) are dimmed while it's unreachable.
+bool needsCore(JsonObjectConst n) {
+  const String t = n["type"] | "";
+  return t == "task" || t == "switch";
+}
 
 struct Grid {
   lv_obj_t *status = nullptr;  // root only: connection label
@@ -1071,9 +1102,7 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
                           root ? InputEvent::SecondaryAction : InputEvent::ButtonPressShort)));
   lv_obj_t *ht = lv_label_create(hdr);
   if (root) {
-    const bool on = netMqttIsConnected();
-    lv_label_set_text(ht, (String(LV_SYMBOL_WIFI "  ") + connectionText()).c_str());
-    lv_obj_set_style_text_color(ht, lv_palette_main(on ? LV_PALETTE_GREEN : LV_PALETTE_RED), 0);
+    showLinkState(ht, linkState());
     g.status = ht;
   } else {
     lv_label_set_text(ht, (String(LV_SYMBOL_LEFT "  ") + title).c_str());
@@ -1130,10 +1159,13 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     //   icon 8..56 | label 64..~94 | gap | toggle 106..130 | 8px
     const bool isSwitch = String(node["type"] | "") == "switch";
     const bool on = isSwitch && switchState(node);
+    const bool dimmed = needsCore(node) && !netMqttIsConnected();
+    const lv_color_t dimGrey = lv_palette_darken(LV_PALETTE_GREY, 2);
     const int32_t top = isSwitch ? 0 : 12;  // switch: 64px box, art drawn at 48 inside it
-    const lv_color_t iconColor = !isSwitch ? lv_color_white()
-                                 : on      ? lv_palette_main(LV_PALETTE_AMBER)
-                                           : lv_palette_darken(LV_PALETTE_GREY, 1);
+    const lv_color_t iconColor = dimmed    ? dimGrey
+                                 : !isSwitch ? lv_color_white()
+                                 : on        ? lv_palette_main(LV_PALETTE_AMBER)
+                                             : lv_palette_darken(LV_PALETTE_GREY, 1);
 
     // Config icon artwork (64px, §12) when it exists, else a 48px symbol in
     // the same 64px slot so labels line up across cells.
@@ -1142,8 +1174,8 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     if (art) {
       icon = lv_image_create(cell);
       lv_image_set_src(icon, art);
-      if (isSwitch) {
-        lv_image_set_scale(icon, 192);  // 75%: 64 -> 48px, centred in its 64px box
+      if (isSwitch) lv_image_set_scale(icon, 192);  // 75%: 64 -> 48px, centred in its 64px box
+      if (isSwitch || dimmed) {
         lv_obj_set_style_image_recolor(icon, iconColor, 0);
         lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
       }
@@ -1165,6 +1197,7 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
       lv_obj_set_style_bg_color(toggle, lv_palette_main(LV_PALETTE_AMBER),
                                 LV_PART_INDICATOR | LV_STATE_CHECKED);
       if (on) lv_obj_add_state(toggle, LV_STATE_CHECKED);
+      if (dimmed) lv_obj_add_state(toggle, LV_STATE_DISABLED);
       lv_obj_align(toggle, LV_ALIGN_BOTTOM_MID, 0, -8);
     }
 
@@ -1175,6 +1208,7 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     const bool big = label.length() <= 9;
     lv_obj_set_style_text_font(name, big ? &lv_font_montserrat_28 : &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+    if (dimmed) lv_obj_set_style_text_color(name, dimGrey, 0);
     lv_obj_set_width(name, cellW - 12);
     if (!big) {
       lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
@@ -1214,7 +1248,7 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
     Grid g = drawGrid(nodes, page, selected, title, root, anim);
     anim = LV_SCREEN_LOAD_ANIM_NONE;
     if (n == 0) uiShow("home-empty", "No menu items\nin the active config", LV_SYMBOL_LIST);
-    bool wasOnline = netMqttIsConnected();
+    const Link drawnLink = linkState();
 
     InputEvent ev = InputEvent::None;
     while (ev == InputEvent::None) {
@@ -1225,11 +1259,11 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
         const bool tasks = pollTileTasks();
         if (pollSceneState() || tasks || switchUndone) break;  // a tile changed: redraw
       }
-      if (root && g.status && netMqttIsConnected() != wasOnline) {
-        wasOnline = !wasOnline;
-        lv_label_set_text(g.status, (String(LV_SYMBOL_WIFI "  ") + connectionText()).c_str());
-        lv_obj_set_style_text_color(
-            g.status, lv_palette_main(wasOnline ? LV_PALETTE_GREEN : LV_PALETTE_RED), 0);
+      if (linkState() != drawnLink) {
+        Serial.printf("[Menu] link: %s\n", linkState() == Link::Online     ? "online"
+                                            : linkState() == Link::NoServer ? "no server"
+                                                                            : "no Wi-Fi");
+        break;  // redraw: header text, and remote tiles dim or light up
       }
       delay(5);
     }

@@ -269,6 +269,13 @@ provisioned to NVS separately, never stored in the JSON config alongside
   contents (§6.3); `false` (the default) means fire-and-forget — the
   device shows a local "sent" acknowledgment immediately and never waits
   or times out.
+- **Offline.** Once paired, the panel always boots to the menu: one
+  foreground Wi-Fi attempt (8 s) and up to 4 s for the broker, then Wi-Fi
+  and MQTT keep reconnecting in the background. The home header shows
+  Online / No server / No Wi-Fi. While the broker is unreachable, `task` and
+  `switch` tiles are dimmed and a tap just shows the red cross (nothing is
+  queued, §6.3); local actions, folders and the phone volume keep working.
+  Everything lights up again on reconnect, with no reboot.
 - **Task feedback on the tile.** Every `task` runs from its menu tile: any
   adjustable params open their editor first, then the grid returns and a
   small spinner at the tile's top-right shows the reply is pending; it turns

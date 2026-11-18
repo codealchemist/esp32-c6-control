@@ -44,8 +44,10 @@ UiView uiShow(const char *name, const char *text, const char *symbol = nullptr,
               std::initializer_list<UiAction> actions = {});
 
 // A new, empty screen for the few views with bespoke layouts (the QR code,
-// the connecting spinner). Deletes the previous screen like uiShow().
-lv_obj_t *uiBlankScreen(const char *name);
+// the connecting spinner, the menu grid). Deletes the previous screen like
+// uiShow(); `anim` slides the new screen in (the menu's page/folder moves).
+lv_obj_t *uiBlankScreen(const char *name,
+                        lv_screen_load_anim_t anim = LV_SCREEN_LOAD_ANIM_NONE);
 
 // Replaces the main text, re-evaluating whether it overflows.
 void uiSetText(const UiView &view, const String &text);

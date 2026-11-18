@@ -282,8 +282,12 @@ provisioned to NVS separately, never stored in the JSON config alongside
   §11.4), `"restoreDefaultConfig"` (copy `default_config.json` back over
   `active.json`, §5.3 point 4), and `"showAbout"` (a static text screen —
   reuses `MessageScreen`'s rendering, not a new screen type — showing the
-  Icons8 attribution required by the free license tier, §12.1). Handled by
-  `app/system_actions.cpp/.h`.
+  Icons8 attribution required by the free license tier, §12.1), and
+  `"phoneVolume"` (a slider that sends volume up/down key presses to the
+  user's phone, paired to the panel as a Bluetooth LE HID media remote —
+  the C6 has no Bluetooth Classic, so HID over GATT rather than AVRCP; the
+  phone never reports its level, so the slider is an estimate). Handled by
+  `app/system_actions.cpp/.h` (POC: `menu.cpp`, `phone_hid.cpp`).
 
 #### 5.2.1 Parameter types
 

@@ -158,7 +158,8 @@ struct Validator {
     } else if (type == "action") {
       s.actions++;
       const String action = n["action"] | "";
-      if (action != "reprovision" && action != "restoreDefaultConfig" && action != "showAbout") {
+      if (action != "reprovision" && action != "restoreDefaultConfig" && action != "showAbout" &&
+          action != "phoneVolume") {
         error(where, "unknown action '" + action + "'");
       }
       detail = "action " + action;

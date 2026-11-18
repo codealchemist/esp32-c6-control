@@ -3,7 +3,7 @@
     "Each icon's \"source\" is either an Icons8 page URL (fetched by its numeric",
     "ID, giving exactly that icon) or a bare name (fetched by name within",
     "\"style\" below, keeping a set of icons visually consistent). The same word",
-    "yields different artwork between the two forms — but note BOTH default to",
+    "yields different artwork between the two forms \u2014 but note BOTH default to",
     "solid black: Icons8's \"logo\" entries are monochrome silhouettes, not the",
     "brand's colour marks.",
     "\"iconColor\" therefore tints BOTH forms (the UI is a permanent dark theme,",
@@ -13,10 +13,10 @@
     "The file on disk always wins: if data/icons_src/icons8/<id>.png exists it",
     "is used as-is and never re-downloaded or overwritten (so hand-placed and",
     "hand-edited art is safe, and offline builds just work). Only a missing",
-    "file triggers a download. To pick up a changed setting below — iconColor,",
-    "color, preserveColors, style, sourceExportSize — DELETE the PNG and",
+    "file triggers a download. To pick up a changed setting below \u2014 iconColor,",
+    "color, preserveColors, style, sourceExportSize \u2014 DELETE the PNG and",
     "rebuild; editing the setting alone will not re-fetch it.",
-    "\"welcomeIcon\" picks which icon the welcome screen renders — see",
+    "\"welcomeIcon\" picks which icon the welcome screen renders \u2014 see",
     "kWelcomeIcon in the generated src/generated/icon_registry_gen.h."
   ],
   "style": "ios-filled",
@@ -30,6 +30,36 @@
       "source": "https://icons8.com/icon/17950/google-logo",
       "license": "free-attribution",
       "file": "data/icons_src/icons8/icon_google.png"
+    },
+    {
+      "id": "icon_light_on",
+      "source": "light-on",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_light_on.png"
+    },
+    {
+      "id": "icon_volume",
+      "source": "speaker",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_volume.png"
+    },
+    {
+      "id": "icon_scenes",
+      "source": "lamp",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_scenes.png"
+    },
+    {
+      "id": "icon_night",
+      "source": "crescent-moon",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_night.png"
+    },
+    {
+      "id": "icon_day",
+      "source": "sun",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_day.png"
     }
   ]
 }

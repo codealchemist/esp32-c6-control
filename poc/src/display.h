@@ -21,3 +21,8 @@ void displaySetBrightness(uint8_t level);
 // Call every loop() iteration — pumps LVGL's timers/redraw and the
 // LovyanGFX flush.
 void displayTick();
+
+// Test aid: plays a finger press-drag-release through LVGL's touch input, as
+// if the panel were touched (serial keys in main.cpp). Real touch is ignored
+// while it runs.
+void displaySimulateDrag(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint32_t ms);

@@ -7,7 +7,9 @@
 #include "app.h"
 #include "config_store.h"
 #include "input.h"
+#include "generated/icon_registry_gen.h"
 #include "net.h"
+#include "phone_hid.h"
 #include "provisioning.h"
 #include "ui_layout.h"
 
@@ -57,8 +59,18 @@ const char *nodeSymbol(JsonObjectConst n) {
   if (type == "folder") {
     return String(n["binding"] | "") == "message_inbox" ? LV_SYMBOL_ENVELOPE : LV_SYMBOL_DIRECTORY;
   }
-  if (type == "action") return LV_SYMBOL_SETTINGS;
+  if (type == "action") {
+    return String(n["action"] | "") == "phoneVolume" ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_SETTINGS;
+  }
   return LV_SYMBOL_PLAY;  // task
+}
+
+const lv_image_dsc_t *iconImage(const char *id) {
+  if (!id || !*id) return nullptr;
+  for (size_t i = 0; i < kIconRegistryCount; i++) {
+    if (strcmp(kIconRegistry[i].id, id) == 0) return kIconRegistry[i].img;
+  }
+  return nullptr;
 }
 
 String newRequestId() {
@@ -174,12 +186,130 @@ void runTask(JsonObjectConst node) {
          lv_palette_main(ok ? LV_PALETTE_GREEN : LV_PALETTE_RED));
 }
 
+// --- Phone volume (local action "phoneVolume") ----------------------------------
+//
+// One control: a full-width slider, 0-100, with the value in large type
+// above it. Drag it (or tap anywhere along it) and every phone volume step
+// crossed sends one volume key press over BLE HID. A small back button sits
+// top-left; BOOT also closes. The phone never reports its level, so the
+// value is an estimate that starts mid-way and drifts if the phone's own
+// buttons are used.
+
+constexpr int kPhoneSteps = 16;   // iOS has 16 volume steps, Android media 15
+constexpr uint32_t kVolumeIdleMs = 15000;
+int gPhoneVolume = 50;            // 0-100, what the slider shows
+int gPhoneStep = kPhoneSteps / 2; // the step last sent for it
+
+int stepFor(int volume) { return (volume * kPhoneSteps + 50) / 100; }
+
+struct VolumeUi {
+  lv_obj_t *value;
+};
+
+void onVolumeSlider(lv_event_t *e) {
+  auto *slider = static_cast<lv_obj_t *>(lv_event_get_target(e));
+  auto *ui = static_cast<VolumeUi *>(lv_event_get_user_data(e));
+  gPhoneVolume = lv_slider_get_value(slider);
+  lv_label_set_text(ui->value, String(gPhoneVolume).c_str());
+  const int step = stepFor(gPhoneVolume);
+  if (step != gPhoneStep) {
+    phoneHidVolumeSteps(step - gPhoneStep);
+    Serial.printf("[Volume] %d (step %d -> %d)%s\n", gPhoneVolume, gPhoneStep, step,
+                  phoneHidConnected() ? "" : " — phone not paired, not sent");
+    gPhoneStep = step;
+  }
+}
+
+void onVolumeBack(lv_event_t *) { inputInject(InputEvent::ButtonPressShort); }
+
+void phoneVolumeScreen(const String &label) {
+  lv_obj_t *scr = uiBlankScreen("phone-volume");
+
+  // Small back button, top-left.
+  lv_obj_t *back = lv_button_create(scr);
+  lv_obj_set_size(back, 56, 40);
+  lv_obj_set_pos(back, 6, 6);
+  lv_obj_set_style_radius(back, 10, 0);
+  lv_obj_set_style_bg_color(back, lv_color_hex(0x2A2A2A), 0);
+  lv_obj_set_style_bg_color(back, lv_color_hex(0x4A4A4A), LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_set_ext_click_area(back, 8);
+  lv_obj_add_event_cb(back, onVolumeBack, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *backL = lv_label_create(back);
+  lv_label_set_text(backL, LV_SYMBOL_LEFT);
+  lv_obj_center(backL);
+
+  lv_obj_t *title = lv_label_create(scr);
+  lv_label_set_text(title, (String(LV_SYMBOL_VOLUME_MAX "  ") + label).c_str());
+  lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 74, 16);
+
+  static VolumeUi ui;
+  ui.value = lv_label_create(scr);
+  lv_obj_set_style_text_font(ui.value, &lv_font_montserrat_48, 0);
+  lv_label_set_text(ui.value, String(gPhoneVolume).c_str());
+  lv_obj_align(ui.value, LV_ALIGN_TOP_MID, 0, 46);
+
+  lv_obj_t *slider = lv_slider_create(scr);
+  lv_slider_set_range(slider, 0, 100);
+  lv_slider_set_value(slider, gPhoneVolume, LV_ANIM_OFF);
+  lv_obj_set_size(slider, 320 - 2 * 28, 14);
+  lv_obj_align(slider, LV_ALIGN_TOP_MID, 0, 122);
+  lv_obj_set_style_pad_all(slider, 10, LV_PART_KNOB);  // finger-sized knob
+  // The slider owns every drag that starts on or near it: a 34px band above
+  // and below the bar, and no gesture/scroll handling stealing the move.
+  lv_obj_set_ext_click_area(slider, 34);
+  lv_obj_remove_flag(slider, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_remove_flag(slider, LV_OBJ_FLAG_SCROLL_CHAIN);
+  lv_obj_add_event_cb(slider, onVolumeSlider, LV_EVENT_VALUE_CHANGED, &ui);
+
+  lv_obj_t *hint = lv_label_create(scr);
+  lv_obj_set_style_text_color(hint, lv_palette_main(LV_PALETTE_GREY), 0);
+  lv_obj_set_width(hint, 320 - 16);
+  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(hint, LV_LABEL_LONG_DOT);
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+
+  bool wasConnected = !phoneHidConnected();  // force the first refresh
+  Serial.println("[Volume] drag the slider ('+'/'-' = encoder, 5 per turn); back or 'b' closes");
+  uint32_t lastActivity = millis();
+  while (true) {
+    appPump();
+    const bool connected = phoneHidConnected();
+    if (connected != wasConnected) {
+      wasConnected = connected;
+      // The slider stays live either way; unpaired, moves just aren't sent.
+      if (connected) {
+        lv_obj_add_flag(hint, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_remove_flag(hint, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(hint, (String("Pair '") + phoneHidName() + "' on your phone").c_str());
+      }
+    }
+    const InputEvent ev = inputPoll();
+    if (ev == InputEvent::EncoderCW || ev == InputEvent::EncoderCCW) {
+      lv_slider_set_value(slider, gPhoneVolume + (ev == InputEvent::EncoderCW ? 5 : -5), LV_ANIM_OFF);
+      lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, nullptr);
+      lastActivity = millis();
+    } else if (ev != InputEvent::None) {
+      return;  // back button / BOOT / push
+    }
+    if (millis() - lastActivity >= kVolumeIdleMs &&
+        lv_display_get_inactive_time(nullptr) >= kVolumeIdleMs) {
+      return;
+    }
+    delay(5);
+  }
+}
+
 // --- Local actions (§5.2) -------------------------------------------------------
 
 void runAction(JsonObjectConst node) {
   const String action = node["action"] | "";
   Serial.println("[Menu] action " + action);
-  if (action == "showAbout") {
+  if (action == "phoneVolume") {
+    phoneVolumeScreen(node["label"] | "Volume");
+  } else if (action == "showAbout") {
     notice("about", "About\nIcons by Icons8 - https://icons8.com", LV_SYMBOL_LIST,
            lv_color_white());
   } else if (action == "reprovision") {
@@ -205,8 +335,9 @@ void runAction(JsonObjectConst node) {
 // --- Navigation (§6.2 NAVIGATE) ------------------------------------------------
 //
 // Two items per page, one per screen half: big icon on top, label below.
-// Touch: tap an item to open it, swipe left/right to page, swipe down (or tap
-// the "< Folder" header) to go back. Encoder: turn moves a highlighted
+// Touch: tap an item to open it, swipe left/right to page (pages slide),
+// swipe down, swipe right on a folder's first page, or tap the "< Folder"
+// header to go back. Encoder: turn moves a highlighted
 // selection item by item, push opens it. BOOT = back. The root level is the
 // home screen: it never closes, and its header shows the connection state
 // (tap it for details).
@@ -246,17 +377,22 @@ void onHeaderClicked(lv_event_t *e) {
   inputInject(static_cast<InputEvent>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e))));
 }
 
+bool isFolder(JsonObjectConst n) {
+  return String(n["type"] | "") == "folder" && String(n["binding"] | "") != "message_inbox";
+}
+
 String connectionText() { return netMqttIsConnected() ? "Online" : "Offline"; }
 
 struct Grid {
   lv_obj_t *status = nullptr;  // root only: connection label
 };
 
-Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &title, bool root) {
+Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &title, bool root,
+              lv_screen_load_anim_t anim) {
   const size_t n = nodes.size();
   const size_t pages = (n + 1) / 2;
   Grid g;
-  lv_obj_t *scr = uiBlankScreen(root ? "home" : "menu");
+  lv_obj_t *scr = uiBlankScreen(root ? "home" : "menu", anim);
   lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);
 
   // Header: connection state (root) or "< Folder" (back), page dots right.
@@ -322,11 +458,21 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     lv_obj_add_event_cb(cell, onCellClicked, LV_EVENT_CLICKED,
                         reinterpret_cast<void *>(static_cast<intptr_t>(idx)));
 
-    lv_obj_t *icon = lv_label_create(cell);
-    lv_label_set_text(icon, nodeSymbol(node));
-    lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
-    lv_obj_set_style_text_color(icon, lv_color_white(), 0);
-    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 16);
+    // Config icon artwork (64px, §12) when it exists, else a 48px symbol in
+    // the same 64px slot so labels line up across cells.
+    const lv_image_dsc_t *art = iconImage(node["icon"] | "");
+    lv_obj_t *icon;
+    if (art) {
+      icon = lv_image_create(cell);
+      lv_image_set_src(icon, art);
+      lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 12);
+    } else {
+      icon = lv_label_create(cell);
+      lv_label_set_text(icon, nodeSymbol(node));
+      lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+      lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+      lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 18);
+    }
 
     const String label = node["label"] | "?";
     lv_obj_t *name = lv_label_create(cell);
@@ -340,7 +486,7 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
       lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
       lv_obj_set_height(name, 2 * lv_font_get_line_height(&lv_font_montserrat_20));
     }
-    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 16 + 48 + 10);
+    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 12 + 64 + 8);
   }
   return g;
 }
@@ -356,11 +502,15 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root,
 
   size_t page = 0;
   int selected = -1;  // encoder highlight; touch use leaves it off
+  // How the next redraw arrives: entering a folder slides in from the right,
+  // paging slides with the swipe, coming back from a folder slides from the left.
+  lv_screen_load_anim_t anim = root ? LV_SCREEN_LOAD_ANIM_NONE : LV_SCREEN_LOAD_ANIM_MOVE_LEFT;
   const size_t pages = n ? (n + 1) / 2 : 1;
   while (true) {
     gTappedCell = -1;
     gGestured = false;
-    Grid g = drawGrid(nodes, page, selected, title, root);
+    Grid g = drawGrid(nodes, page, selected, title, root, anim);
+    anim = LV_SCREEN_LOAD_ANIM_NONE;
     if (n == 0) uiShow("home-empty", "No menu items\nin the active config", LV_SYMBOL_LIST);
     bool wasOnline = netMqttIsConnected();
 
@@ -383,13 +533,22 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root,
         if (n == 0) break;
         const bool fwd = ev == InputEvent::EncoderCW;
         if (gGestured) {  // swipe: whole page
+          if (!fwd && page == 0 && !root) {
+            // Swiping right on a folder's first page backs out, like a
+            // back gesture, instead of wrapping to its last page.
+            Serial.println("[Menu] swipe -> back");
+            return;
+          }
           page = fwd ? (page + 1) % pages : (page + pages - 1) % pages;
           selected = -1;
+          if (pages > 1) anim = fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;
           Serial.printf("[Menu] swipe -> page %u/%u\n", page + 1, pages);
         } else {          // encoder: item by item
+          const size_t before = page;
           selected = selected < 0 ? static_cast<int>(page * 2)
                                   : (fwd ? (selected + 1) % n : (selected + n - 1) % n);
           page = selected / 2;
+          if (page != before) anim = fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;
         }
         break;
       }
@@ -398,11 +557,13 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root,
         const int idx = touched ? gTappedCell : (selected >= 0 ? selected : page * 2);
         if (!touched) selected = idx;
         openNode(nodes[idx], title);  // then redraw this level
+        if (isFolder(nodes[idx])) anim = LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;  // back from it
         break;
       }
       case InputEvent::ButtonPressShort:
       case InputEvent::ButtonPressLong:
         if (!root) return;
+        if (page != 0) anim = LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;
         page = 0;  // home: back = first page
         selected = -1;
         break;

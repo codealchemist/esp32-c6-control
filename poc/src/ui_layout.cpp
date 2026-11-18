@@ -15,6 +15,8 @@ constexpr int32_t kSideBtnW = 118;  // the single action button, 1-action layout
 constexpr int32_t kBarH = 52;
 constexpr int32_t kBarY = kH - kM - kBarH;
 
+constexpr uint32_t kSlideMs = 220;  // page/folder slide
+
 const char *gScreenName = "boot";
 
 // LV_SYMBOL_* glyphs are 3-byte UTF-8 sequences in the private-use area,
@@ -58,14 +60,13 @@ void openOverlay(lv_event_t *e) {
   Serial.println("[UI] text expanded fullscreen");
 }
 
-lv_obj_t *makeScreen(const char *name) {
-  lv_obj_t *old = lv_screen_active();
+lv_obj_t *makeScreen(const char *name, lv_screen_load_anim_t anim = LV_SCREEN_LOAD_ANIM_NONE) {
   lv_obj_t *scr = lv_obj_create(nullptr);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-  lv_screen_load(scr);
-  // Loading a screen does not delete the previous one, and this app swaps
-  // screens forever — without this every pass leaks a whole screen.
-  if (old && old != scr) lv_obj_delete(old);
+  // auto_del: this app swaps screens forever, so the previous one must go —
+  // LVGL deletes it after the slide (or right away without one), and if a
+  // new screen arrives mid-slide it finishes that one first.
+  lv_screen_load_anim(scr, anim, anim == LV_SCREEN_LOAD_ANIM_NONE ? 0 : kSlideMs, 0, true);
   gScreenName = name;
   return scr;
 }
@@ -200,7 +201,9 @@ lv_obj_t *makeText(lv_obj_t *area, int32_t y, bool scrolls) {
 
 } // namespace
 
-lv_obj_t *uiBlankScreen(const char *name) { return makeScreen(name); }
+lv_obj_t *uiBlankScreen(const char *name, lv_screen_load_anim_t anim) {
+  return makeScreen(name, anim);
+}
 
 void uiSetText(const UiView &view, const String &text) {
   lv_obj_t *label = view.text;

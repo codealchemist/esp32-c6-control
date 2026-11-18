@@ -19,6 +19,7 @@
 #include "generated/icon_registry_gen.h"
 #include "input.h"
 #include "net.h"
+#include "phone_hid.h"
 #include "pins.h"
 #include "provisioning.h"
 #include "touch.h"
@@ -69,6 +70,8 @@ void serialCommandPoll() {
     // screen is drivable from a console on boards without input wired:
     //   + / -  encoder turn      s  encoder push (open / set)
     //   b      BOOT (back)       a  home: connection details
+    //   v / V  drag the volume slider right / left (simulated touch)
+    //   h / H  swipe left / right (simulated touch)
     if (c == '+') {
       inputInject(InputEvent::EncoderCW);
     } else if (c == '-') {
@@ -79,6 +82,14 @@ void serialCommandPoll() {
       inputInject(InputEvent::ButtonPressShort);
     } else if (c == 's' || c == 'S') {
       inputInject(InputEvent::EncoderPressShort);
+    } else if (c == 'v') {
+      displaySimulateDrag(60, 129, 260, 129, 700);  // volume slider, left -> right
+    } else if (c == 'V') {
+      displaySimulateDrag(260, 129, 60, 129, 700);  // volume slider, right -> left
+    } else if (c == 'h') {
+      displaySimulateDrag(260, 100, 60, 100, 200);  // swipe left (next page)
+    } else if (c == 'H') {
+      displaySimulateDrag(60, 100, 260, 100, 200);  // swipe right (previous / back)
     } else if (c == 't' || c == 'T') {
       touchSetDebug(!touchDebugEnabled());
     } else if (c == 'w' || c == 'W') {
@@ -401,6 +412,11 @@ void showStatusScreen(const String &summary, bool wifiConnected, bool online = f
 
   gOnline = true;
   publishKnob("initial");
+  // The phone remote (Volume menu item). BLE comes up only now: provisioning
+  // owns it before this, and starting it once per boot is enough.
+  static String hidName = "Panel-" + WiFi.macAddress().substring(12, 14) +
+                          WiFi.macAddress().substring(15, 17);
+  phoneHidBegin(hidName.c_str());
   menuHome([summary]() { return summary + "\nCore: " + gLastCmd; });
   gOnline = false;
 }
@@ -409,6 +425,7 @@ void showStatusScreen(const String &summary, bool wifiConnected, bool online = f
 
 void appPump() {
   displayTick();
+  phoneHidPoll();
   serialCommandPoll();
   if (gOnline) onlineService();
 }

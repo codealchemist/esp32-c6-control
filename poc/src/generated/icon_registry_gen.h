@@ -10,12 +10,22 @@
 static const char *const kIconAttribution = "Icons by Icons8 - https://icons8.com";
 
 extern const lv_image_dsc_t icon_google;
+extern const lv_image_dsc_t icon_light_on;
+extern const lv_image_dsc_t icon_volume;
+extern const lv_image_dsc_t icon_scenes;
+extern const lv_image_dsc_t icon_night;
+extern const lv_image_dsc_t icon_day;
 
 struct IconRegistryEntry { const char *id; const lv_image_dsc_t *img; };
 static const IconRegistryEntry kIconRegistry[] = {
     {"icon_google", &icon_google},
+    {"icon_light_on", &icon_light_on},
+    {"icon_volume", &icon_volume},
+    {"icon_scenes", &icon_scenes},
+    {"icon_night", &icon_night},
+    {"icon_day", &icon_day},
 };
-static const size_t kIconRegistryCount = 1;
+static const size_t kIconRegistryCount = 6;
 
 // Selected by icons_manifest.json's "welcomeIcon".
 static const lv_image_dsc_t *const kWelcomeIcon = &icon_google;

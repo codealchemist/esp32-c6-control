@@ -141,15 +141,42 @@ void lvglFlushCb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
 
 uint32_t lvglTickCb() { return millis(); }
 
+// A scripted finger for testing from the serial console (displaySimulateDrag):
+// pressed from start to end, moving linearly, then released.
+struct SimDrag {
+  bool active = false;
+  int16_t x0, y0, x1, y1;
+  uint32_t start, ms;
+} gSim;
+
+bool simRead(int16_t &x, int16_t &y) {
+  const uint32_t t = millis() - gSim.start;
+  if (t >= gSim.ms) {
+    gSim.active = false;  // this read reports the release, at the end point
+    x = gSim.x1;
+    y = gSim.y1;
+    return false;
+  }
+  x = gSim.x0 + (int32_t)(gSim.x1 - gSim.x0) * (int32_t)t / (int32_t)gSim.ms;
+  y = gSim.y0 + (int32_t)(gSim.y1 - gSim.y0) * (int32_t)t / (int32_t)gSim.ms;
+  return true;
+}
+
 void lvglTouchReadCb(lv_indev_t *, lv_indev_data_t *data) {
   int16_t x, y;
-  const bool pressed = touchRead(x, y);
+  const bool pressed = gSim.active ? simRead(x, y) : touchRead(x, y);
   data->point.x = x;
   data->point.y = y;
   data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
 
 } // namespace
+
+void displaySimulateDrag(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint32_t ms) {
+  gSim = {true, x0, y0, x1, y1, millis(), ms ? ms : 1};
+  Serial.printf("[Touch] simulated drag (%d,%d) -> (%d,%d) in %lums\n", x0, y0, x1, y1,
+                (unsigned long)ms);
+}
 
 void displayInit() {
   gLcd.init();

@@ -21,32 +21,20 @@
       "label": "Lights On",
       "icon": "icon_light_on",
       "task": {
-        "payload": { "taskId": "lights-on", "state": "on" },
+        "payload": {
+          "taskId": "lights-on",
+          "state": "on"
+        },
         "qos": 1,
         "params": []
       }
     },
     {
-      "id": "player-volume",
-      "type": "task",
+      "id": "phone-volume",
+      "type": "action",
       "label": "Volume",
       "icon": "icon_volume",
-      "task": {
-        "payload": { "taskId": "player-volume" },
-        "qos": 1,
-        "expectsResult": true,
-        "params": [
-          {
-            "key": "level",
-            "type": "int",
-            "min": 0,
-            "max": 100,
-            "step": 1,
-            "default": 40,
-            "encoderAdjustable": true
-          }
-        ]
-      }
+      "action": "phoneVolume"
     },
     {
       "id": "messages",
@@ -60,15 +48,46 @@
       "id": "scenes",
       "type": "folder",
       "label": "Scenes",
-      "icon": "icon_folder",
+      "icon": "icon_scenes",
       "children": [
+        {
+          "id": "scene-night",
+          "type": "task",
+          "label": "Night",
+          "icon": "icon_night",
+          "task": {
+            "payload": {
+              "taskId": "scene-night",
+              "tuyaScene": "night mode"
+            },
+            "qos": 1,
+            "expectsResult": true
+          }
+        },
+        {
+          "id": "scene-day",
+          "type": "task",
+          "label": "Day",
+          "icon": "icon_day",
+          "task": {
+            "payload": {
+              "taskId": "scene-day",
+              "tuyaScene": "day mode"
+            },
+            "qos": 1,
+            "expectsResult": true
+          }
+        },
         {
           "id": "scene-movie",
           "type": "task",
           "label": "Movie",
           "icon": "icon_movie",
           "task": {
-            "payload": { "taskId": "scene-movie", "name": "movie" },
+            "payload": {
+              "taskId": "scene-movie",
+              "name": "movie"
+            },
             "qos": 1
           }
         }

@@ -853,7 +853,9 @@ bool provisioningRun(const std::function<void(const String &qrPayload)> &onQrRea
   // to retire (ble_gap_conn_broken and friends) that touch the objects
   // deinit() is about to free. Give it room.
   delay(300);
-  BLEDevice::deinit(true);
+  // false: keep the stack's memory so the phone remote (phone_hid.cpp) can
+  // bring BLE back up later in this same boot.
+  BLEDevice::deinit(false);
   delay(100);
   gTxChar = nullptr;
   gShuttingDown = false;

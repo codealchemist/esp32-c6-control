@@ -1,27 +1,57 @@
 #pragma once
 
-// =============================================================================
-// Display pins — CONFIRMED (Waveshare ESP32-C6-LCD-1.47, ST7789), from
-// Waveshare's own example firmware. See docs/ARCHITECTURE.md §2.
-// =============================================================================
-#define PIN_LCD_MISO 5
-#define PIN_LCD_MOSI 6
-#define PIN_LCD_SCLK 7
-#define PIN_LCD_CS 14
-#define PIN_LCD_DC 15
-#define PIN_LCD_RST 21
-#define PIN_LCD_BL 22
+// Board: Waveshare ESP32-C6-Touch-LCD-1.47 — JD9853 LCD + AXS5106L capacitive
+// touch. NOT the non-touch ESP32-C6-LCD-1.47 (ST7789, different pins) this
+// POC originally targeted: on this board that config left the screen black.
+//
+// Every pin below is from Waveshare's own pin table and demo firmware for the
+// touch board (docs.waveshare.com/ESP32-C6-Touch-LCD-1.47 and the
+// 01_gfx_helloworld / esp_lcd_touch_axs5106l sources in its demo package).
 
 // =============================================================================
-// Input pins — **NOT CONFIRMED. EDIT BEFORE FLASHING.**
-// These are placeholders only, chosen to avoid the display pins above and
-// the C6's USB-JTAG pins (12/13), but NOT verified against your board's
-// actual free GPIOs, silkscreen labels, or strapping-pin constraints
-// (GPIO4/8/9 are strapping pins on the C6 — avoid them for anything that
-// must read a stable level at boot, which button/encoder pins generally
-// aren't, but worth knowing). See docs/POC.md §5.
+// Display — JD9853 over 4-wire SPI. CONFIRMED.
 // =============================================================================
-#define PIN_BUTTON 2      // dedicated Back/Home button — CONFIRM
-#define PIN_ENCODER_CLK 1 // KY-040 CLK — CONFIRM
-#define PIN_ENCODER_DT 3  // KY-040 DT — CONFIRM
-#define PIN_ENCODER_SW 10 // KY-040 push-button — CONFIRM
+#define PIN_LCD_SCLK 1
+#define PIN_LCD_MOSI 2
+#define PIN_LCD_MISO -1  // panel is write-only; GPIO3 is the TF card's MISO
+#define PIN_LCD_CS 14
+#define PIN_LCD_DC 15
+#define PIN_LCD_RST 22
+#define PIN_LCD_BL 23
+
+// =============================================================================
+// Touch — AXS5106L on I2C (bus shared with the onboard QMI8658 IMU). CONFIRMED.
+// =============================================================================
+#define PIN_TOUCH_SDA 18
+#define PIN_TOUCH_SCL 19
+#define PIN_TOUCH_RST 20
+#define PIN_TOUCH_INT 21
+
+// =============================================================================
+// Physical inputs.
+//
+// PIN_BUTTON is the board's own BOOT button (GPIO8, active low, external
+// pull-up) — real hardware, no wiring needed. Caveat: holding BOOT *while
+// resetting* enters the ROM bootloader, so the "hold at boot to force
+// re-provisioning" gesture only works if BOOT is pressed just after the
+// reset, during the ~2s splash before inputInit() samples it.
+//
+// KY-040 rotary encoder, wired to the board's 22-pin header — see
+// docs/WIRING_ROTARY_ENCODER.md. GPIO10/11 (the old placeholders) are not
+// usable on this board: the ESP32-C6FH8's 32-pin package doesn't bring them
+// out, and the header doesn't have them.
+// The header's free pins are IO7, IO3/IO4 (TF card lines, unused here) and
+// TXD/RXD (UART0, idle because the console is on USB):
+//   - IO3 and IO4 already have 10K pull-ups to 3V3 on the board (R3-R6),
+//     which suits the encoder's active-low outputs — but they are the TF
+//     card's MISO/CS, so no TF card while the encoder is fitted.
+//   - TXD is avoided: the ROM prints boot messages on it, driving the pin
+//     while the encoder contact may be shorting it to GND.
+// =============================================================================
+#define PIN_BUTTON 8       // BOOT button — CONFIRMED
+#define PIN_ENCODER_CLK 3  // KY-040 CLK -> header IO3
+#define PIN_ENCODER_DT 7   // KY-040 DT  -> header IO7
+#define PIN_ENCODER_SW 4   // KY-040 SW  -> header IO4
+// Shortcut button: a momentary push button between header pin 17 (RXD, UART0
+// is idle) and GND. Runs the menu action chosen in Settings > Shortcut button.
+#define PIN_SHORTCUT 17

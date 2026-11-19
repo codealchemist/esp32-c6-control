@@ -220,19 +220,32 @@ the burned-in default.
 }
 ```
 
-All commands publish to the single `mqtt.topics.commands` topic with a
-`taskId`-tagged JSON payload — one topic to subscribe/ACL per device rather
-than one per task, which keeps broker-side authorization simple (§8).
+**Topic directions** (aligned with the nodrige Core, which is the server
+end of every topic — revised from the original draft, which had `commands`
+and `messages` the other way round):
+
+| Topic            | Direction       | Carries                                                                 |
+| ---------------- | --------------- | ----------------------------------------------------------------------- |
+| `messages`       | device → server | Every device-originated event as a CoreEvent `{componentId, eventType, value, metadata}`: telemetry, and **task invocations** (`eventType: "task"`, §6.3) |
+| `commands`       | server → device | Every server-originated command `{action, value, correlationId, ...}`: e.g. `echo`, and **task replies** (`action: "task_result"`, §6.3) |
+| `commandResults` | device → server | Outcomes of what the server sent the device, e.g. config push results `{type: "config", status, errors}` (§5.3) |
+| `config`         | server → device | Retained config documents (§5.3)                                        |
+| `status`         | device → server | Presence: retained `{"state":"online", ip, fw, configVersion}` on every connect; last will `{"state":"offline"}` (retained). Read by the Core's device registry and the web console |
+
+Each direction is one topic per device rather than one per task, which keeps
+broker-side authorization simple (§8): a device may publish only to
+`messages`, `commandResults` and `status`, and subscribe only to `commands`
+and `config`.
 
 QoS per topic (confirmed):
 
 | Topic            | QoS | Why                                                                 |
 | ----------------- | --- | -------------------------------------------------------------------- |
-| `commands`         | 1   | A dropped "lights on" is bad UX (§5.2)                               |
+| `messages`         | 1   | Carries task invocations: a dropped "lights on" is bad UX (§5.2)     |
+| `commands`         | 1   | Carries task replies — a result worth publishing is worth delivering |
 | `config`           | 1   | A dropped config push shouldn't silently fail to land                |
-| `commandResults`   | 1   | Matches `commands` — a result worth publishing is worth delivering   |
-| `messages`         | 1   | A dropped push message is a lost notification the user never sees    |
-| `status`           | 0   | Presence/LWT (§8) is inherently a "latest state wins" signal — the next publish supersedes a lost one, so at-most-once is fine |
+| `commandResults`   | 1   | A config outcome the server never sees leaves it guessing            |
+| `status`           | 1, retained | Presence must be there for whoever subscribes later (the web console); the broker's last will replaces it with `offline` |
 
 The MQTT **password** (or TLS client cert/key, if using mutual TLS) is
 provisioned to NVS separately, never stored in the JSON config alongside
@@ -256,6 +269,77 @@ provisioned to NVS separately, never stored in the JSON config alongside
   contents (§6.3); `false` (the default) means fire-and-forget — the
   device shows a local "sent" acknowledgment immediately and never waits
   or times out.
+- **Offline.** Once paired, the panel always boots to the menu: one
+  foreground Wi-Fi attempt (8 s) and up to 4 s for the broker, then Wi-Fi
+  and MQTT keep reconnecting in the background. The home header shows
+  Online / No server / No Wi-Fi. While the broker is unreachable, `task` and
+  `switch` tiles are dimmed and a tap just shows the red cross (nothing is
+  queued, §6.3); local actions, folders and the phone volume keep working.
+  Everything lights up again on reconnect, with no reboot.
+- **Weather (`"weather"` action).** A page set like Device details: Now
+  (conditions, temperature, feels-like, humidity, wind, rain), UV (now and
+  today's max, coloured on the WHO scale, with a tip), 3 days (icon, high/low,
+  rain %) and Alerts (SMN alerts for the home's location; tap for the
+  instructions). Data comes from the Core's `weather` extension: Open-Meteo
+  for the forecast (every 15 min) and SMN Argentina's CAP feed for alerts
+  (every 5 min, filtered by the alert polygon). Location: the Tuya home's, or
+  `WEATHER_ADDRESS` in the Core's `.env` (geocoded once via Nominatim).
+  Tasks: `weather` (snapshot) and `weather-alert` (one alert's text); the
+  Core pushes `{ action: "weather_alert", alerts, new }` when alerts change:
+  new ones pop up (waking the screen) and the home header shows a ⚠ badge
+  with the count, coloured by the worst level. Text sent to the panel is
+  ASCII (its fonts have no accented letters).
+- **Shortcut button (`"shortcut"` field).** Marks a task or switch as one
+  the physical shortcut button may run; other types are rejected, since a
+  press can't choose a value (Volume, for example, is not a fit).
+  - `"shortcut": true` on a switch: each press toggles it, like a tap.
+  - `"shortcut": true` on a task: each press runs it.
+  - `"shortcut": { "off": { "tuyaScene": "Turn Off" } }` on a task: presses
+    alternate. While the task's scene is active (as the panel knows it: its
+    last run, or the Core's `scene_state`, asked at boot and when a scenes
+    page opens) the press runs the task with `off` merged into the payload;
+    otherwise it runs the task normally.
+
+  The press works from any menu page and also on a dimmed or off screen
+  (it wakes it *and* runs); a pill at the bottom shows progress and the
+  result.
+- **Task feedback on the tile.** Every `task` runs from its menu tile: any
+  adjustable params open their editor first, then the grid returns and a
+  small spinner at the tile's top-right shows the reply is pending; it turns
+  into a green check or red cross for 3 s (no reply in 5 s = cross).
+  Fire-and-forget tasks show the check once sent. Message text goes to the
+  log, not the screen.
+- **Active scene.** Tasks whose payload names a `tuyaScene` get a lit tile
+  while that scene is active. Tuya has no notion of a current scene, so the
+  Core learns one: 10 s after a scene runs (cancelled if another scene runs
+  first) it stores the states of the scene's lights as its fingerprint. When
+  a page with scene tiles opens, the panel asks (a `scene-state` task) and
+  the Core answers `{ action: "scene_state", active: [<lowercase names>] }`
+  on the commands topic: the scene that ran in the last 30 s, otherwise the
+  scenes whose fingerprints match the lights now. A successful scene run
+  lights its tile immediately; nothing re-checks until the page is opened
+  again (no polling, no pushes).
+- **`switch`** — leaf with two states, on and off, shown as a toggle on its
+  menu item (icon lit when on). Each tap flips it and publishes a task
+  exactly like `task` does (§6.3), with `switch.payload` plus
+  `state: "on" | "off"` plus that state's own optional object, so each state
+  can carry different data:
+
+  ```json
+  { "id": "lights", "type": "switch", "label": "Lights", "icon": "icon_light_on",
+    "switch": { "payload": { "taskId": "lights" }, "qos": 1, "expectsResult": true,
+                "default": false,
+                "on":  { "tuyaScene": "Turn On" },
+                "off": { "tuyaScene": "Turn Off" } } }
+  ```
+
+  The state is kept in NVS across reboots, starting at `default`, and shown
+  immediately on tap. With `expectsResult`, an error reply or no reply within
+  5s flips it back and says why. To catch changes made elsewhere (the Smart
+  Life app, a wall switch), the panel asks the Core for the real state
+  (`switch-state` task with the `on` object's `tuyaScene`; the Core reports
+  "on" if any light that scene acts on is on) at boot and on screen wake, at
+  most once per the "Switch sync" setting (default 10 min; Never = boot only).
 - **`folder`** — has `children`, another array of nodes, rendered as its own
   carousel level when entered. Supports arbitrary nesting depth.
 - **`folder` with `binding`** — instead of static `children`, the folder's
@@ -269,8 +353,26 @@ provisioned to NVS separately, never stored in the JSON config alongside
   §11.4), `"restoreDefaultConfig"` (copy `default_config.json` back over
   `active.json`, §5.3 point 4), and `"showAbout"` (a static text screen —
   reuses `MessageScreen`'s rendering, not a new screen type — showing the
-  Icons8 attribution required by the free license tier, §12.1). Handled by
-  `app/system_actions.cpp/.h`.
+  Icons8 attribution required by the free license tier, §12.1), and
+  `"volume"` (a slider with a Phone | Computer toggle: for the phone it sends
+  volume up/down key presses to the user's phone, paired to the panel as a
+  Bluetooth LE HID media remote — the C6 has no Bluetooth Classic, so HID over
+  GATT rather than AVRCP, and the phone never reports its level, so that
+  value is an estimate; for the computer it sends the Core's `player-volume`
+  task, which sets and reports the real 0-100 output level of the machine
+  the Core runs on. `"phoneVolume"` is accepted as an older name), and
+  `"screenDim"` (how long without input before the backlight dims — Never,
+  10 s … 10 min, default 30 s; an on-device setting kept in NVS, not in the
+  config; the touch that wakes a dimmed screen does nothing else),
+  `"shortcut"` (picks the menu item the physical shortcut button runs, from
+  the items the config marks with a `shortcut` field — see below; kept in
+  NVS by node id, so it survives config pushes as long as that id stays in
+  the menu), and
+  `"screenOff"` (same idea one step further: after Never / 30 s … 30 min,
+  default 5 min, the backlight goes to 0 and the panel sleeps; any touch,
+  button or encoder input turns it back on and is otherwise ignored).
+  Handled by
+  `app/system_actions.cpp/.h` (POC: `menu.cpp`, `phone_hid.cpp`).
 
 #### 5.2.1 Parameter types
 
@@ -480,7 +582,13 @@ Encoder pushed on a task icon
   → else: send immediately
 AppController → net/task_publisher.send(task, paramValues)
   → builds { ...task.payload, ...paramValues, requestId } JSON
-  → net/mqtt_client.publish(commandsTopic, payload, qos)
+  → wraps it as a CoreEvent on mqtt.topics.messages:
+      { componentId: <node id>, eventType: "task", value: <requestId>,
+        metadata: { taskId, expectsResult, payload: <the JSON above> } }
+    (value = requestId so every invocation is a state *change* for the
+    server's State Engine — a repeated "lights on" would otherwise be
+    dropped as a heartbeat)
+  → net/mqtt_client.publish(messagesTopic, event, qos)
   → if MQTT not currently connected: drop it and show a UI error
     immediately (confirmed — no local command queue/replay: sending a
     stale "lights on" minutes later on reconnect would be worse than
@@ -489,11 +597,13 @@ AppController → net/task_publisher.send(task, paramValues)
     "sent" acknowledgment right away and return to NAVIGATE — no waiting,
     no correlation, no timeout logic engaged
   → if task.expectsResult is true: wait for a correlated reply (below)
-Backend executes the task and, only for expectsResult tasks, publishes a
-  reply to mqtt.topics.commandResults, keyed by requestId — its contents
-  are task-specific and the UI can act on them (e.g. show a returned
-  value/message), not just render a generic success/fail icon
-net/mqtt_client's subscription callback matches requestId → publishes
+Backend executes the task and, only for expectsResult tasks, sends a reply
+  command on mqtt.topics.commands:
+      { action: "task_result", correlationId: <requestId>,
+        result: { status: "ok" | "error", message, ...task-specific } }
+  — its contents are task-specific and the UI can act on them (e.g. show a
+  returned value/message), not just render a generic success/fail icon
+net/mqtt_client's subscription callback matches correlationId → publishes
   TaskResultEvent (success/failure/custom payload), or a short client-side
   timeout (e.g. 5s with no result) publishes a TaskResultEvent(timeout)
 ui shows a transient toast/status then returns to NAVIGATE
@@ -502,7 +612,9 @@ ui shows a transient toast/status then returns to NAVIGATE
 ### 6.4 Inbound message flow
 
 ```
-Server publishes to the device's mqtt.topics.messages topic
+Server sends a command on the device's mqtt.topics.commands topic:
+    { action: "message", text, icon?, id?, timestamp? }
+  (revised: `messages` is the device → server direction, §5.1)
   → net/mqtt_client's subscription callback fires with the raw payload
   → parses { text, icon?, id?, timestamp? }
   → storage/fs_store persists to a small on-disk queue (bounded, e.g. last 50)
@@ -884,6 +996,9 @@ it.
 3. Build. The PNG is downloaded to `data/icons_src/icons8/<icon_id>.png`
    at `sourceExportSize`, converted, and registered automatically.
 
+An icon entry may set its own `"size"` (e.g. 28 for the Volume page's small
+phone/computer icons); otherwise `sourceExportSize` applies.
+
 `sourceExportSize` is both the download size **and** the final rendered
 size — LVGLImage.py does not resize, so the source PNG's dimensions are
 what get baked in. (This corrects an earlier assumption here that a large
@@ -894,8 +1009,7 @@ artwork is present and the network is not touched on every rebuild.
 Deleting a PNG is what re-fetches it.
 
 The pipeline fails the build loudly rather than shipping wrong art: an
-unknown icon name, a `welcomeIcon` naming no defined icon, a duplicate
-icon id, or a response that isn't a PNG (Icons8 answers unrecognised
+unknown icon name, a duplicate icon id, or a response that isn't a PNG (Icons8 answers unrecognised
 requests with an HTML page, which is checked for explicitly).
 
 If the paid tier is ever adopted after all, the *only* change that should
@@ -914,7 +1028,6 @@ with a valid key — the manifest and everything downstream stays identical.
   // Icons8 free tier requires a visible credit (§12.1); the build fails
   // without this and renders it on the showAbout screen (§5.2).
   "attribution": "Icons by Icons8 - https://icons8.com",
-  "welcomeIcon": "icon_light_on",
   "icons": [
     {
       "id": "icon_light_on",

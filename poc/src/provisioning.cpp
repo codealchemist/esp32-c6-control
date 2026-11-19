@@ -773,7 +773,7 @@ bool provisioningRun(const std::function<void(const String &qrPayload)> &onQrRea
       gWifiCredsPending = false;
       const String ssid = gPendingSsid;
       const String pass = gPendingWifiPassword;
-      Serial.println("[Prov] WIFI_CREDS for SSID '" + ssid + "'");
+      Serial.println("[Prov] WIFI_CREDS received");  // the network name stays out of the log
       report("Connecting to Wi-Fi\n\n" + ssid);
 
       JsonDocument st;
@@ -853,7 +853,9 @@ bool provisioningRun(const std::function<void(const String &qrPayload)> &onQrRea
   // to retire (ble_gap_conn_broken and friends) that touch the objects
   // deinit() is about to free. Give it room.
   delay(300);
-  BLEDevice::deinit(true);
+  // false: keep the stack's memory so the phone remote (phone_hid.cpp) can
+  // bring BLE back up later in this same boot.
+  BLEDevice::deinit(false);
   delay(100);
   gTxChar = nullptr;
   gShuttingDown = false;

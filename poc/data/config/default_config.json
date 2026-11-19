@@ -1,0 +1,224 @@
+{
+  "configVersion": 1,
+  "mqtt": {
+    "brokerHost": "",
+    "brokerPort": 0,
+    "useTls": false,
+    "clientId": "",
+    "username": "",
+    "topics": {
+      "commands": "",
+      "commandResults": "",
+      "messages": "",
+      "config": "",
+      "status": ""
+    }
+  },
+  "menu": [
+    {
+      "id": "lights",
+      "type": "switch",
+      "label": "Lights",
+      "icon": "icon_light_on",
+      "switch": {
+        "payload": {
+          "taskId": "lights"
+        },
+        "qos": 1,
+        "expectsResult": true,
+        "default": false,
+        "on": {
+          "tuyaScene": "Turn On"
+        },
+        "off": {
+          "tuyaScene": "Turn Off"
+        }
+      },
+      "shortcut": true
+    },
+    {
+      "id": "volume",
+      "type": "action",
+      "label": "Volume",
+      "icon": "icon_volume",
+      "action": "volume"
+    },
+    {
+      "id": "spotify",
+      "type": "folder",
+      "label": "Spotify",
+      "icon": "icon_spotify",
+      "children": [
+        {
+          "id": "spotify-like",
+          "type": "switch",
+          "label": "Liked",
+          "icon": "icon_heart",
+          "switch": {
+            "payload": {
+              "taskId": "spotify-like"
+            },
+            "qos": 1,
+            "expectsResult": true,
+            "default": false,
+            "state": {
+              "taskId": "spotify-liked"
+            }
+          },
+          "shortcut": true
+        },
+        {
+          "id": "spotify-skip",
+          "type": "task",
+          "label": "Skip & drop",
+          "icon": "icon_skip",
+          "task": {
+            "payload": {
+              "taskId": "spotify-skip-drop"
+            },
+            "qos": 1,
+            "expectsResult": true
+          },
+          "shortcut": true
+        },
+        {
+          "id": "spotify-player",
+          "type": "player",
+          "label": "Player",
+          "player": {
+            "taskId": "spotify-player",
+            "qos": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "weather",
+      "type": "action",
+      "label": "Weather",
+      "icon": "icon_weather",
+      "action": "weather"
+    },
+    {
+      "id": "messages",
+      "type": "folder",
+      "label": "Messages",
+      "binding": "message_inbox",
+      "children": []
+    },
+    {
+      "id": "scenes",
+      "type": "folder",
+      "label": "Scenes",
+      "icon": "icon_scenes",
+      "children": [
+        {
+          "id": "scene-night",
+          "type": "task",
+          "label": "Night",
+          "icon": "icon_night",
+          "task": {
+            "payload": {
+              "taskId": "scene-night",
+              "tuyaScene": "night mode"
+            },
+            "qos": 1,
+            "expectsResult": true
+          },
+          "shortcut": {
+            "off": {
+              "tuyaScene": "Turn Off"
+            }
+          }
+        },
+        {
+          "id": "scene-high-night",
+          "type": "task",
+          "label": "High Night",
+          "icon": "icon_high_night",
+          "task": {
+            "payload": {
+              "taskId": "scene-high-night",
+              "tuyaScene": "high night mode"
+            },
+            "qos": 1,
+            "expectsResult": true
+          },
+          "shortcut": {
+            "off": {
+              "tuyaScene": "Turn Off"
+            }
+          }
+        },
+        {
+          "id": "scene-day",
+          "type": "task",
+          "label": "Day",
+          "icon": "icon_day",
+          "task": {
+            "payload": {
+              "taskId": "scene-day",
+              "tuyaScene": "day mode"
+            },
+            "qos": 1,
+            "expectsResult": true
+          },
+          "shortcut": {
+            "off": {
+              "tuyaScene": "Turn Off"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "settings",
+      "type": "folder",
+      "label": "Settings",
+      "children": [
+        {
+          "id": "screen-dim",
+          "type": "action",
+          "label": "Screen dimming",
+          "action": "screenDim"
+        },
+        {
+          "id": "screen-off",
+          "type": "action",
+          "label": "Screen off",
+          "action": "screenOff"
+        },
+        {
+          "id": "switch-sync",
+          "type": "action",
+          "label": "Switch sync",
+          "action": "switchSync"
+        },
+        {
+          "id": "shortcut",
+          "type": "action",
+          "label": "Shortcut button",
+          "action": "shortcut"
+        },
+        {
+          "id": "reprovision",
+          "type": "action",
+          "label": "Reset Wi-Fi/MQTT",
+          "action": "reprovision"
+        },
+        {
+          "id": "restore-config",
+          "type": "action",
+          "label": "Restore Default Config",
+          "action": "restoreDefaultConfig"
+        },
+        {
+          "id": "about",
+          "type": "action",
+          "label": "About",
+          "action": "showAbout"
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 #include "device_info.h"
 
+#include "config_store.h"
+
 #include <WiFi.h>
 #include <esp_chip_info.h>
 #include <esp_flash.h>
@@ -31,6 +33,8 @@ std::vector<String> collectDeviceInfoLines() {
 
   lines.push_back(String("LVGL: v") + lv_version_major() + "." + lv_version_minor() + "." +
                    lv_version_patch());
+
+  lines.push_back(configSummaryLine());
 
   lines.push_back("Built: " __DATE__ " " __TIME__);
 

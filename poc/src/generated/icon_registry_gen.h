@@ -9,13 +9,62 @@
 // screen — see showAboutScreen() in main.cpp.
 static const char *const kIconAttribution = "Icons by Icons8 - https://icons8.com";
 
-extern const lv_image_dsc_t icon_google;
+extern const lv_image_dsc_t icon_light_on;
+extern const lv_image_dsc_t icon_volume;
+extern const lv_image_dsc_t icon_scenes;
+extern const lv_image_dsc_t icon_night;
+extern const lv_image_dsc_t icon_day;
+extern const lv_image_dsc_t icon_high_night;
+extern const lv_image_dsc_t icon_phone;
+extern const lv_image_dsc_t icon_computer;
+extern const lv_image_dsc_t icon_weather;
+extern const lv_image_dsc_t icon_wx_sun;
+extern const lv_image_dsc_t icon_wx_moon;
+extern const lv_image_dsc_t icon_wx_partly;
+extern const lv_image_dsc_t icon_wx_cloud;
+extern const lv_image_dsc_t icon_wx_rain;
+extern const lv_image_dsc_t icon_wx_storm;
+extern const lv_image_dsc_t icon_wx_fog;
+extern const lv_image_dsc_t icon_wx_snow;
+extern const lv_image_dsc_t icon_ic_wind;
+extern const lv_image_dsc_t icon_ic_tmax;
+extern const lv_image_dsc_t icon_ic_tmin;
+extern const lv_image_dsc_t icon_ic_rain;
+extern const lv_image_dsc_t icon_ic_uv;
+extern const lv_image_dsc_t icon_ic_sunrise;
+extern const lv_image_dsc_t icon_ic_sunset;
+extern const lv_image_dsc_t icon_heart;
+extern const lv_image_dsc_t icon_skip;
+extern const lv_image_dsc_t icon_spotify;
 
 struct IconRegistryEntry { const char *id; const lv_image_dsc_t *img; };
 static const IconRegistryEntry kIconRegistry[] = {
-    {"icon_google", &icon_google},
+    {"icon_light_on", &icon_light_on},
+    {"icon_volume", &icon_volume},
+    {"icon_scenes", &icon_scenes},
+    {"icon_night", &icon_night},
+    {"icon_day", &icon_day},
+    {"icon_high_night", &icon_high_night},
+    {"icon_phone", &icon_phone},
+    {"icon_computer", &icon_computer},
+    {"icon_weather", &icon_weather},
+    {"icon_wx_sun", &icon_wx_sun},
+    {"icon_wx_moon", &icon_wx_moon},
+    {"icon_wx_partly", &icon_wx_partly},
+    {"icon_wx_cloud", &icon_wx_cloud},
+    {"icon_wx_rain", &icon_wx_rain},
+    {"icon_wx_storm", &icon_wx_storm},
+    {"icon_wx_fog", &icon_wx_fog},
+    {"icon_wx_snow", &icon_wx_snow},
+    {"icon_ic_wind", &icon_ic_wind},
+    {"icon_ic_tmax", &icon_ic_tmax},
+    {"icon_ic_tmin", &icon_ic_tmin},
+    {"icon_ic_rain", &icon_ic_rain},
+    {"icon_ic_uv", &icon_ic_uv},
+    {"icon_ic_sunrise", &icon_ic_sunrise},
+    {"icon_ic_sunset", &icon_ic_sunset},
+    {"icon_heart", &icon_heart},
+    {"icon_skip", &icon_skip},
+    {"icon_spotify", &icon_spotify},
 };
-static const size_t kIconRegistryCount = 1;
-
-// Selected by icons_manifest.json's "welcomeIcon".
-static const lv_image_dsc_t *const kWelcomeIcon = &icon_google;
+static const size_t kIconRegistryCount = 27;

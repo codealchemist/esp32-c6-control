@@ -8,17 +8,25 @@
 // API; also requires LV_USE_QRCODE enabled in lv_conf.h (README.md).
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <lvgl.h>
 
+#include "config_store.h"
 #include "device_info.h"
 #include "display.h"
 #include "generated/icon_registry_gen.h"
 #include "input.h"
 #include "net.h"
+#include "phone_hid.h"
 #include "pins.h"
 #include "provisioning.h"
+#include "touch.h"
+#include "ui_layout.h"
+#include "app.h"
+#include "diag.h"
+#include "menu.h"
 
 namespace {
 
@@ -34,10 +42,84 @@ namespace {
 // read provisioningIsProvisioned() by the time most of these screens are
 // showing, and half-applying the change mid-sequence would leave Wi-Fi and
 // NVS state disagreeing about whether this device is provisioned.
+
+
+// One line every 30s that tells "the board hung" apart from "touch stopped
+// reporting" apart from "the screen loop isn't reading input": if these keep
+// coming, the app task is alive; touch ok/err and last-touch age show the
+// touch path; the screen name shows where the app is.
+constexpr uint32_t kDiagEveryMs = 30000;
+uint32_t gLastDiag = 0;
+
+void diagPoll() {
+  if (millis() - gLastDiag < kDiagEveryMs) return;
+  gLastDiag = millis();
+  const TouchStats t = touchStats();
+  Serial.printf("[Diag] up=%lus screen=%s heap=%uKB min=%uKB touch ok=%lu err=%lu last=%s\n",
+                millis() / 1000, uiScreenName(), ESP.getFreeHeap() / 1024,
+                ESP.getMinFreeHeap() / 1024, (unsigned long)t.readsOk,
+                (unsigned long)t.readErrors,
+                t.msSinceTouch == UINT32_MAX ? "never"
+                                             : (String(t.msSinceTouch / 1000) + "s ago").c_str());
+}
+
+void serialKey(char c);
+
 void serialCommandPoll() {
-  while (Serial.available() > 0) {
-    const int c = Serial.read();
-    if (c == 'r' || c == 'R') {
+  diagPoll();
+  while (Serial.available() > 0) serialKey((char)Serial.read());
+}
+
+void serialKey(char c) {
+  {
+    // Serial stand-ins for the encoder, BOOT and touch actions, so every
+    // screen is drivable from a console on boards without input wired:
+    //   + / -  encoder turn      s  encoder push (open / set)
+    //   b      BOOT (back)       a  home: connection details
+    //   v / V  drag the volume slider right / left (simulated touch)
+    //   h / H  swipe left / right (simulated touch)
+    //   C      tap the Volume page's phone/computer switch (simulated touch)
+    //   k      the shortcut button    p  print input pin levels
+    if (c == '+') {
+      inputInject(InputEvent::EncoderCW);
+    } else if (c == '-') {
+      inputInject(InputEvent::EncoderCCW);
+    } else if (c == 'a' || c == 'A') {
+      inputInject(InputEvent::SecondaryAction);
+    } else if (c == 'b' || c == 'B') {
+      inputInject(InputEvent::ButtonPressShort);
+    } else if (c == 's' || c == 'S') {
+      inputInject(InputEvent::EncoderPressShort);
+    } else if (c == 'v') {
+      displaySimulateDrag(60, 129, 260, 129, 700);  // volume slider, left -> right
+    } else if (c == 'V') {
+      displaySimulateDrag(260, 129, 60, 129, 700);  // volume slider, right -> left
+    } else if (c == 'h') {
+      displaySimulateDrag(260, 70, 60, 70, 200);  // swipe left (next page)
+    } else if (c == 'H') {
+      displaySimulateDrag(60, 70, 260, 70, 200);  // swipe right (previous / back)
+    } else if (c == 'p' || c == 'P') {
+      inputPrintPins();
+    } else if (c == 'k' || c == 'K') {
+      inputInject(InputEvent::ShortcutPress);  // the shortcut button
+    } else if (c == 'C') {
+      displaySimulateDrag(285, 26, 285, 26, 60);  // tap: Volume page target switch
+    } else if (c == 't' || c == 'T') {
+      touchSetDebug(!touchDebugEnabled());
+    } else if (c == 'w' || c == 'W') {
+      // What the board itself can see — the C6 is 2.4 GHz only, so this is
+      // the quickest way to tell "wrong SSID" from "network is 5 GHz-only"
+      // when provisioning reports "SSID not found".
+      Serial.println("[Serial] 'w' — scanning Wi-Fi (2.4 GHz)...");
+      if (WiFi.getMode() == WIFI_OFF) WiFi.mode(WIFI_STA);
+      const int n = WiFi.scanNetworks();
+      for (int i = 0; i < n; i++) {
+        Serial.printf("[Scan] %-32s ch %2d  %4d dBm\n", WiFi.SSID(i).c_str(), WiFi.channel(i),
+                      WiFi.RSSI(i));
+      }
+      Serial.printf("[Scan] %d network(s)\n", n < 0 ? 0 : n);
+      WiFi.scanDelete();
+    } else if (c == 'r' || c == 'R') {
       Serial.println("[Serial] 'r' — clearing provisioning state, restarting...");
       provisioningForceReset();
       Serial.flush();  // ESP.restart() does not drain the TX buffer for us.
@@ -100,71 +182,69 @@ void littleFsSmokeTest() {
   }
 }
 
+// The connecting screen is rebuilt only when it is not already showing, so
+// the spinner keeps turning across phase updates. Tracked by screen object,
+// not by label pointer: any other screen being shown deletes this one.
+lv_obj_t *gConnectingScreen = nullptr;
 lv_obj_t *gConnectingLabel = nullptr;
-
-lv_obj_t *makeBlankScreen() {
-  lv_obj_t *scr = lv_obj_create(nullptr);
-  lv_scr_load(scr);
-  // Any widget pointer cached from the outgoing screen is dangling the
-  // moment a new one loads. Cleared centrally so a stale pointer can never
-  // outlive its screen.
-  gConnectingLabel = nullptr;
-  return scr;
-}
 
 lv_obj_t *gWelcomeScreen = nullptr;
 
 void showWelcomeScreen() {
-  gWelcomeScreen = makeBlankScreen();
+  gWelcomeScreen = uiBlankScreen("welcome");
   lv_obj_t *label = lv_label_create(gWelcomeScreen);
-  lv_label_set_text(label, "ESP32-C6 Remote Control\nPOC");
-  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(label, LV_ALIGN_CENTER, 0, -20);
+  lv_label_set_text(label, "ESP32-C6\nRemote Control\nPOC");
+  lv_obj_align(label, LV_ALIGN_LEFT_MID, 100, 0);
 }
 
 void addIconToWelcomeScreen() {
-  lv_obj_t *img = lv_image_create(gWelcomeScreen);
-  // Which icon this is comes from icons_manifest.json's "welcomeIcon" —
-  // changing it is a manifest edit, not a code edit.
-  lv_image_set_src(img, kWelcomeIcon);
-  lv_obj_align(img, LV_ALIGN_CENTER, 0, 40);
+  // A built-in font symbol (no image to store): a connected device. The
+  // project uses no Google services, so no third-party logo here.
+  lv_obj_t *icon = lv_label_create(gWelcomeScreen);
+  lv_label_set_text(icon, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+  lv_obj_align(icon, LV_ALIGN_LEFT_MID, 24, 0);
 }
 
 void showDeviceInfoScreen() {
-  lv_obj_t *scr = makeBlankScreen();
-  lv_obj_t *list = lv_list_create(scr);
+  // One action: Next on the left, the scrollable info list on the right.
+  UiView v = uiShow("device-info", nullptr, nullptr, lv_color_white(),
+                    {{"Next", InputEvent::EncoderPressShort}});
+  lv_obj_t *list = lv_list_create(v.content);
   lv_obj_set_size(list, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_pad_all(list, 0, 0);
+  lv_obj_set_style_border_width(list, 0, 0);
 
   for (const String &line : collectDeviceInfoLines()) {
     lv_list_add_text(list, line.c_str());
   }
-  // On-screen equivalent of the Serial hint below — without an encoder wired
-  // up there is otherwise nothing telling you the screen will move on by
-  // itself, which reads as a hang.
-  lv_list_add_text(list, ("-- push, or wait " + String(kIdleAdvanceMs / 1000) + "s --").c_str());
+  // Without input hardware nothing else says the screen moves on by itself,
+  // which reads as a hang.
+  lv_list_add_text(list, ("Continues after " + String(kIdleAdvanceMs / 1000) + "s idle").c_str());
 
-  Serial.printf("[DeviceInfo] scroll with the encoder, push to continue "
+  Serial.printf("[DeviceInfo] scroll by touch or encoder, Next/push to continue "
                  "(auto-advances after %ums idle)\n",
                  kIdleAdvanceMs);
 
-  // Idle timer, not a fixed deadline: scrolling restarts it, so the timeout
-  // only fires when nobody is actually using the screen. That keeps the
-  // screen usable once an encoder IS wired up, rather than yanking it away
-  // mid-scroll.
+  // Idle timer, not a fixed deadline: scrolling restarts it.
   uint32_t lastActivity = millis();
   while (true) {
     displayTick();
     serialCommandPoll();
     InputEvent ev = inputPoll();
     if (ev == InputEvent::EncoderCW) {
-      lv_obj_scroll_by(list, 0, -20, LV_ANIM_ON);
+      lv_obj_scroll_by(list, 0, -24, LV_ANIM_ON);
       lastActivity = millis();
     } else if (ev == InputEvent::EncoderCCW) {
-      lv_obj_scroll_by(list, 0, 20, LV_ANIM_ON);
+      lv_obj_scroll_by(list, 0, 24, LV_ANIM_ON);
       lastActivity = millis();
-    } else if (ev == InputEvent::EncoderPressShort || ev == InputEvent::EncoderPressLong) {
+    } else if (ev == InputEvent::EncoderPressShort || ev == InputEvent::EncoderPressLong ||
+               ev == InputEvent::ButtonPressShort) {
       break;
-    } else if ((millis() - lastActivity) >= kIdleAdvanceMs) {
+    } else if ((millis() - lastActivity) >= kIdleAdvanceMs &&
+               lv_display_get_inactive_time(nullptr) >= kIdleAdvanceMs) {
+      // Second condition: a finger dragging the list counts as activity too.
       Serial.println("[DeviceInfo] idle timeout — advancing");
       break;
     }
@@ -173,73 +253,49 @@ void showDeviceInfoScreen() {
 }
 
 // ARCHITECTURE.md §5.2's `"showAbout"` action, in the reduced form this POC
-// can support: the real build reaches it from the Settings menu, which
-// doesn't exist here, so it sits in the fixed boot sequence instead.
-//
-// This is a licence obligation, not decoration. ARCHITECTURE.md §12.1 chose
-// Icons8's free tier, whose terms are conditional on a visible credit
-// wherever the icons are used — and §12.2 leans on this screen harder still,
-// since it is the project's only visible act of compliance. The text comes
-// from the manifest via kIconAttribution rather than being written out here,
-// so the credit on screen cannot drift from the one recorded next to the
-// licence.
+// can support. A licence obligation, not decoration: Icons8's free tier
+// (§12.1) requires a visible credit. The text comes from the manifest via
+// kIconAttribution, so the credit cannot drift from the licence record.
 void showAboutScreen() {
-  lv_obj_t *scr = makeBlankScreen();
-  lv_obj_t *label = lv_label_create(scr);
-  String text = String("About\n\n") + kIconAttribution +
-                "\n\nPress any button, or wait " + String(kIdleAdvanceMs / 1000) + "s";
-  lv_label_set_text(label, text.c_str());
-  lv_obj_set_width(label, 300);
-  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+  uiShow("about",
+         (String("About\n") + kIconAttribution + "\n(continues in " +
+          String(kIdleAdvanceMs / 1000) + "s)")
+             .c_str(),
+         LV_SYMBOL_LIST, lv_color_white(), {{"OK", InputEvent::EncoderPressShort}});
 
   Serial.println("[About] " + String(kIconAttribution));
 
-  // Also timed out: with no input hardware wired up this would otherwise be
-  // the second thing standing between boot and the provisioning QR.
+  // Timed out too: without input hardware this would otherwise stand between
+  // boot and the provisioning QR.
   waitForInput(/*acceptAny=*/true, InputEvent::None, kIdleAdvanceMs);
 }
 
-lv_obj_t *gProvisioningLabel = nullptr;
-
 void showProvisioningScreen(const String &qrPayload) {
-  lv_obj_t *scr = makeBlankScreen();
+  lv_obj_t *scr = uiBlankScreen("pairing-qr");
 
   // Dim while the QR is up — see kBrightnessQr in display.h. Restored by
   // loop() once provisioningRun() returns.
   displaySetBrightness(kBrightnessQr);
 
   lv_obj_t *qr = lv_qrcode_create(scr);
-  // Sized to very nearly the full 172px screen height. Module size is what
-  // decides whether a camera can resolve this at all, and it is the product
-  // of canvas size and payload length: at 120px with the old JSON payload
-  // each module was 2 physical pixels, which is below what any scanner can
-  // reliably lock onto. 164px with the compact payload
-  // (PROVISIONING_PROTOCOL_V2.md §8) gives 4px — the practical ceiling on a
-  // 172px-tall panel, since 5px would need a 205px canvas.
+  // 164px gives the compact payload (PROVISIONING_PROTOCOL_V2.md §8) 4px per
+  // module: the practical ceiling on this 172px panel, and what cameras need.
   lv_qrcode_set_size(qr, 164);
-  // Deliberately NOT themed: the QR stays dark-on-light even though every
-  // other surface is dark. Inverted (light-on-dark) codes are out of spec and
-  // a meaningful share of phone scanners refuse them, and a QR nobody can scan
-  // fails provisioning outright.
+  // Deliberately NOT themed: dark-on-light even though every other surface
+  // is dark — inverted codes are out of spec and many scanners refuse them.
   lv_qrcode_set_dark_color(qr, lv_color_black());
   lv_qrcode_set_light_color(qr, lv_color_white());
-  // Matters much more now that the surrounding screen is dark. Off by default
-  // (the widget's constructor never sets it), which lets the modules run to
-  // the canvas edge — against a dark background that leaves no quiet zone at
-  // all, and scanners need ~4 modules of light margin to lock on.
+  // Scanners need ~4 modules of light margin; the dark screen gives none.
   lv_qrcode_set_quiet_zone(qr, true);
   lv_qrcode_update(qr, qrPayload.c_str(), qrPayload.length());
   lv_obj_align(qr, LV_ALIGN_LEFT_MID, 4, 0);
 
-  // Whatever width is left beside the QR — deliberately the leftover, not a
-  // round number, so growing the QR never silently overlaps the text.
-  gProvisioningLabel = lv_label_create(scr);
-  lv_label_set_text(gProvisioningLabel, "Scan to pair...");
-  lv_obj_set_width(gProvisioningLabel, 138);
-  lv_label_set_long_mode(gProvisioningLabel, LV_LABEL_LONG_WRAP);
-  lv_obj_align(gProvisioningLabel, LV_ALIGN_RIGHT_MID, -6, 0);
+  lv_obj_t *label = lv_label_create(scr);
+  lv_label_set_text(label, "Scan to pair");
+  lv_obj_set_width(label, 138);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(label, LV_ALIGN_RIGHT_MID, -6, 0);
 
   Serial.println("[Provisioning] QR ready:");
   Serial.println(qrPayload);
@@ -247,78 +303,163 @@ void showProvisioningScreen(const String &qrPayload) {
   displayTick();
 }
 
-// Replaces the QR once the app has paired: a spinner plus whatever phase
-// provisioningRun() is currently in. Builds the screen on first call and
-// only swaps the text afterwards — rebuilding per update would restart the
-// spinner animation from zero and make it stutter on every phase change.
+// A spinner in the big-icon slot plus whatever phase is running. Built once
+// and only re-texted afterwards — rebuilding per update would restart the
+// spinner animation and make it stutter on every phase change.
 void showConnectingScreen(const String &status) {
-  if (gConnectingLabel == nullptr) {
-    lv_obj_t *scr = makeBlankScreen();
+  if (gConnectingScreen == nullptr || lv_screen_active() != gConnectingScreen) {
+    gConnectingScreen = uiBlankScreen("connecting");
 
-    lv_obj_t *spinner = lv_spinner_create(scr);
-    lv_obj_set_size(spinner, 56, 56);
+    lv_obj_t *spinner = lv_spinner_create(gConnectingScreen);
+    lv_obj_set_size(spinner, 64, 64);
     lv_spinner_set_anim_params(spinner, 1000, 60);
-    lv_obj_align(spinner, LV_ALIGN_LEFT_MID, 26, 0);
+    lv_obj_align(spinner, LV_ALIGN_LEFT_MID, 12, 0);
 
-    gConnectingLabel = lv_label_create(scr);
-    lv_obj_set_width(gConnectingLabel, 190);
+    gConnectingLabel = lv_label_create(gConnectingScreen);
+    lv_obj_set_width(gConnectingLabel, 220);
     lv_label_set_long_mode(gConnectingLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(gConnectingLabel, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(gConnectingLabel, LV_ALIGN_RIGHT_MID, -12, 0);
+    lv_obj_align(gConnectingLabel, LV_ALIGN_RIGHT_MID, -6, 0);
 
     // The QR is spent, so nothing needs the reduced backlight any more.
     displaySetBrightness(kBrightnessNormal);
   }
 
   lv_label_set_text(gConnectingLabel, status.c_str());
-  Serial.println("[Connecting] " + status);
+  // The log keeps the first line only: the rest is the network name or
+  // broker host, shown on screen but kept out of the log (which the
+  // console can stream).
+  const int nl = status.indexOf('\n');
+  Serial.println("[Connecting] " + (nl < 0 ? status : status.substring(0, nl)));
   displayTick();
 }
 
-void showStatusScreen(const String &wifiLine, const String &mqttLine, bool wifiConnected) {
-  lv_obj_t *scr = makeBlankScreen();
+// --- Online service ---------------------------------------------------------------
+//
+// Everything the device does while connected, independent of which screen is
+// showing (nodrige docs/00-poc-implementation-guide.md §0.6 items 6–7, and
+// docs/ARCHITECTURE.md §5.3 point 3): incoming commands
+// and config pushes. Called from every online screen's loop.
 
-  // Icon in the same left slot the connecting spinner occupies, so the
-  // screen reads as that one resolving rather than as a different screen.
-  //
-  // LV_SYMBOL_* are glyphs in the built-in Montserrat font, not images —
-  // which is what keeps this out of the Icons8 pipeline entirely. That
-  // pipeline exists for menu-node artwork (ARCHITECTURE.md §5/§12); status
-  // chrome like this is what LVGL's own symbol set is for, and it costs no
-  // download, no manifest entry, and no attribution.
-  lv_obj_t *icon = lv_label_create(scr);
-  lv_label_set_text(icon, wifiConnected ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING);
-  lv_obj_set_style_text_font(icon, &lv_font_montserrat_28, 0);
-  lv_obj_set_style_text_color(
-      icon, lv_palette_main(wifiConnected ? LV_PALETTE_GREEN : LV_PALETTE_RED), 0);
-  lv_obj_align(icon, LV_ALIGN_LEFT_MID, 26, 0);
+// MQTT broker this boot connected to, for the device details page.
+String gBrokerHost;
 
-  lv_obj_t *label = lv_label_create(scr);
-  String text = wifiLine + "\n\n" + mqttLine + "\n\nPress any button to continue";
-  lv_label_set_text(label, text.c_str());
-  lv_obj_set_width(label, 224);
-  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-  lv_obj_align(label, LV_ALIGN_RIGHT_MID, -8, 0);
+// Set while the MQTT client is up with device topics subscribed; gates the
+// online part of appPump().
+bool gOnline = false;
 
-  Serial.println("[Status] " + wifiLine);
-  Serial.println("[Status] " + mqttLine);
+// Replies to menu tasks (task_result), held until whoever waits claims them
+// by requestId (appTakeTaskResult). A few slots, since several tiles can be
+// waiting at once; the oldest is overwritten.
+struct TaskResult {
+  String id, json;
+};
+TaskResult gTaskResults[4];
+size_t gTaskResultNext = 0;
 
-  // "Any button press" per docs/POC.md §2 step 7 — deliberately not
-  // filtered to one event type, unlike everywhere else in the real input
-  // scheme.
-  waitForInput(/*acceptAny=*/true);
+
+void onlineService() {
+  String cmd;
+  if (netMqttTakeCommand(cmd)) {
+    JsonDocument doc;
+    const bool json = deserializeJson(doc, cmd) == DeserializationError::Ok;
+    const String action = json ? String(doc["action"] | "") : String("");
+    // Console diagnostics (telemetry, log stream renewals, shell lines) are
+    // frequent and print their own output: not echoed here.
+    const bool diag = json && diagHandleCommand(action, doc.as<JsonVariantConst>());
+    // Player state replies (every 5 s while its page is open) aren't echoed either.
+    const bool playerState = json && action == "task_result" && doc["result"]["active"].is<bool>();
+    if (!diag && !playerState) Serial.println("[Command] " + cmd);
+    if (diag) {
+      // handled by diag.cpp
+    } else if (!json) {
+      Serial.println("[Command] not JSON - ignored");
+    } else if (String(doc["action"] | "") == "weather_alert") {
+      menuWeatherAlerts(doc.as<JsonVariantConst>());
+    } else if (String(doc["action"] | "") == "scene_state") {
+      menuSetActiveScenes(doc["active"].as<JsonArrayConst>());
+    } else if (String(doc["action"] | "") == "task_result") {
+      // A reply to a menu task (§6.3), matched by requestId by whoever waits.
+      gTaskResults[gTaskResultNext] = {doc["correlationId"] | "", cmd};
+      gTaskResultNext = (gTaskResultNext + 1) % 4;
+    }
+  }
+
+  String pushed;
+  if (netMqttTakeConfig(pushed)) {
+    Serial.printf("[Config] push received (%u bytes)\n", pushed.length());
+    String result;
+    const PushResult r = configApplyPushed(pushed, result);
+    const bool sent = netMqttPublishResult(result);
+    Serial.println("[Config] result " + result + (sent ? "" : " — NOT sent"));
+    if (r == PushResult::Applied) {
+      // §5.3: always a full reboot to apply. Show why, and give the QoS 1
+      // result publish a moment to leave before the connection drops.
+      uiShow("config-applied", "Config updated\nRestarting...", LV_SYMBOL_REFRESH,
+             lv_palette_main(LV_PALETTE_BLUE));
+      pumpFor(1500);
+      Serial.flush();
+      ESP.restart();
+    }
+  }
+}
+
+// Pairing failed or timed out: say so, then retry pairing (press Retry, or
+// wait 30s).
+void showStatusScreen(const String &summary) {
+  uiShow("status", summary.c_str(), LV_SYMBOL_WARNING, lv_palette_main(LV_PALETTE_RED),
+         {{"Retry", InputEvent::EncoderPressShort}});
+  Serial.println("[Status] retrying in 30s (or press Retry)");
+  waitForInput(/*acceptAny=*/true, InputEvent::None, 30000);
 }
 
 } // namespace
 
+void appPump() {
+  displayTick();
+  netWifiPoll();
+  phoneHidPoll();
+  serialCommandPoll();
+  if (gOnline) {
+    onlineService();
+    diagService();
+  }
+}
+
+const String &appBrokerHost() { return gBrokerHost; }
+
+void appSerialKey(char c) { serialKey(c); }
+
+bool appTakeTaskResult(const String &requestId, String &resultJson) {
+  for (TaskResult &r : gTaskResults) {
+    if (!r.id.isEmpty() && r.id == requestId) {
+      resultJson = r.json;
+      r = {};
+      return true;
+    }
+  }
+  return false;
+}
+
 void setup() {
   Serial.begin(115200);
-  delay(2000);
+  // Never wait on the USB serial console. With USB plugged into a computer
+  // but no serial monitor reading (e.g. after a flash/test session), the
+  // driver otherwise waits up to ~2s per log write (20 x its 100ms timeout)
+  // for a host that never reads: the UI froze and the loop watchdog rebooted
+  // the board. Now unread log output is simply dropped.
+  Serial.setTxTimeoutMs(0);
+  // Just long enough for a USB serial monitor to attach and catch the banner;
+  // the screen comes up right after config load.
+  delay(300);
   Serial.println("=== ESP32-C6 Remote Control Panel POC ===");
   Serial.println("[Serial] type 'r' + Enter at any time to clear provisioning "
                   "and restart (re-shows the pairing QR)");
 
   littleFsSmokeTest();
+
+  // docs/ARCHITECTURE.md §5.3 boot step: load /config/active.json, creating
+  // it from the burned-in default if missing or invalid.
+  configLoad();
 
   // Verifies this build's crypto against the spec's published test vectors
   // (PROVISIONING_PROTOCOL_V2.md §10) before anything depends on it.
@@ -333,16 +474,28 @@ void setup() {
     Serial.println("[Boot] button held — forcing re-provisioning");
     provisioningForceReset();
   }
+
+  // Hang detector: from here on, displayTick() (called by every wait loop)
+  // feeds the loop watchdog; 5s without it panics with a backtrace.
+  enableLoopWDT();
 }
 
 void loop() {
-  showWelcomeScreen();
-  pumpFor(2000);
-  addIconToWelcomeScreen();
-  pumpFor(2000);
+  // The intro (welcome, device info, About credit) only matters before the
+  // board is paired. Once it is, boot goes straight to connecting: the same
+  // details live on the home screen's device details page, and the Icons8
+  // credit stays reachable under Settings > About (ARCHITECTURE.md §12.1).
+  static bool firstPass = true;
+  if (!provisioningIsProvisioned() && firstPass) {
+    showWelcomeScreen();
+    pumpFor(2000);
+    addIconToWelcomeScreen();
+    pumpFor(2000);
 
-  showDeviceInfoScreen();
-  showAboutScreen();
+    showDeviceInfoScreen();
+    showAboutScreen();
+  }
+  firstPass = false;
 
   MqttProvisionedConfig mqttCfg;
 
@@ -358,44 +511,76 @@ void loop() {
     // QR screen behind.
     displaySetBrightness(kBrightnessNormal);
     if (!ok) {
-      showStatusScreen("Wi-Fi: provisioning failed or timed out", "MQTT: not attempted",
-                       /*wifiConnected=*/false);
+      Serial.println("[Status] Wi-Fi: provisioning failed or timed out");
+      showStatusScreen("Pairing failed\nor timed out");
       return; // loop() re-enters from the top
     }
   }
+
+  // Fill active.json's mqtt block from provisioning (§5.1) — a no-op when
+  // nothing changed since the last boot.
+  configSyncMqtt(mqttCfg);
 
   // Credentials come from our own NVS copy, NOT from WiFi.SSID()/psk():
   // those report the currently associated AP, which on a fresh boot is
   // nothing at all (see provisioningLoadStoredWifi).
   const WifiCredentials wifiCreds = provisioningLoadStoredWifi();
 
-  // Same spinner on the already-provisioned path: this leg also blocks for
-  // ~15s per attempt, and without it the previous screen just sits there
-  // looking frozen.
+  // First Wi-Fi attempt in the foreground, with the spinner, so a normal boot
+  // reaches the menu already connected. Either way the menu opens after it:
+  // Wi-Fi and the server keep retrying in the background, and what needs the
+  // Core is shown disabled until they're back.
   showConnectingScreen("Connecting to Wi-Fi\n\n" + wifiCreds.ssid);
   WifiResult wifi =
-      netConnectWifi(wifiCreds.ssid, wifiCreds.password, 15000, []() { displayTick(); });
-  String wifiLine = wifi.connected
-                        ? ("Wi-Fi: " + wifiCreds.ssid + " — Connected (" + wifi.ip + ")")
-                        : ("Wi-Fi: Failed (" + wifi.errorReason + ")");
+      netConnectWifi(wifiCreds.ssid, wifiCreds.password, 8000, []() { displayTick(); });
+  Serial.println("[Status] " + String(wifi.connected ? "Wi-Fi: Connected (" + wifi.ip + ")"
+                                                     : "Wi-Fi: Failed (" + wifi.errorReason +
+                                                           ") - retrying in the background"));
+  netWifiKeepConnected(wifiCreds.ssid, wifiCreds.password);
 
-  String mqttLine;
-  if (wifi.connected && mqttCfg.valid) {
-    showConnectingScreen("Connecting to MQTT\n\n" + mqttCfg.brokerHost);
-    MqttResult mqtt = netConnectMqttAndTestEcho(
-        mqttCfg.brokerHost, mqttCfg.brokerPort, mqttCfg.useTls, mqttCfg.clientId,
-        mqttCfg.username, mqttCfg.password, 15000, []() { displayTick(); });
-    if (mqtt.connected && mqtt.echoOk) {
-      mqttLine = "MQTT: Connected";
-    } else if (mqtt.connected) {
-      mqttLine = "MQTT: Connected, no echo (" + mqtt.errorReason + ")";
-    } else {
-      mqttLine = "MQTT: Failed (" + mqtt.errorReason + ")";
+  if (mqttCfg.valid) {
+    gBrokerHost = mqttCfg.brokerHost;
+    DeviceTopics topics;
+    topics.commands = mqttCfg.topicCommands;
+    topics.messages = mqttCfg.topicMessages;
+    topics.config = mqttCfg.topicConfig;
+    topics.commandResults = mqttCfg.topicCommandResults;
+    topics.status = mqttCfg.topicStatus;
+    // Siblings of the status topic: devices/<id>/telemetry and /log.
+    {
+      const int slash = mqttCfg.topicStatus.lastIndexOf('/');
+      const String base = slash >= 0 ? mqttCfg.topicStatus.substring(0, slash + 1) : String("");
+      if (base.length()) {
+        topics.telemetry = base + "telemetry";
+        topics.log = base + "log";
+      }
+    }
+    netMqttSetStatusInfo(String("\"fw\":\"") + __DATE__ + " " + __TIME__ + "\",\"configVersion\":" +
+                         String(configActiveVersion()));
+    if (!netMqttBegin(mqttCfg.brokerHost, mqttCfg.brokerPort, mqttCfg.useTls, mqttCfg.clientId,
+                      mqttCfg.username, mqttCfg.password, topics)) {
+      Serial.println("[MQTT] stored config unusable (no host or topics) - staying offline");
+    } else if (wifi.connected) {
+      // A moment for the usual case, so home opens already online.
+      showConnectingScreen("Connecting to server\n\n" + mqttCfg.brokerHost);
+      const uint32_t start = millis();
+      while (!netMqttIsConnected() && millis() - start < 4000) {
+        displayTick();
+        serialCommandPoll();
+        delay(10);
+      }
+      Serial.println(netMqttIsConnected() ? "[Status] MQTT: Connected"
+                                          : "[Status] MQTT: not reachable yet - retrying in the background");
     }
   } else {
-    mqttLine = "MQTT: not attempted (Wi-Fi unavailable)";
+    Serial.println("[MQTT] no stored broker config - staying offline");
   }
 
-  showStatusScreen(wifiLine, mqttLine, wifi.connected);
-  // loop() re-enters from the top — docs/POC.md §2 step 8
+  gOnline = true;  // the online services run from here on; they cope with being offline
+  // The phone remote (Volume menu item). BLE comes up only now: provisioning
+  // owns it before this, and starting it once per boot is enough.
+  static String hidName = "Panel-" + WiFi.macAddress().substring(12, 14) +
+                          WiFi.macAddress().substring(15, 17);
+  phoneHidBegin(hidName.c_str());
+  menuHome();  // never returns
 }

@@ -325,7 +325,11 @@ void showConnectingScreen(const String &status) {
   }
 
   lv_label_set_text(gConnectingLabel, status.c_str());
-  Serial.println("[Connecting] " + status);
+  // The log keeps the first line only: the rest is the network name or
+  // broker host, shown on screen but kept out of the log (which the
+  // console can stream).
+  const int nl = status.indexOf('\n');
+  Serial.println("[Connecting] " + (nl < 0 ? status : status.substring(0, nl)));
   displayTick();
 }
 
@@ -529,8 +533,7 @@ void loop() {
   showConnectingScreen("Connecting to Wi-Fi\n\n" + wifiCreds.ssid);
   WifiResult wifi =
       netConnectWifi(wifiCreds.ssid, wifiCreds.password, 8000, []() { displayTick(); });
-  Serial.println("[Status] " + String(wifi.connected ? "Wi-Fi: " + wifiCreds.ssid +
-                                                           " - Connected (" + wifi.ip + ")"
+  Serial.println("[Status] " + String(wifi.connected ? "Wi-Fi: Connected (" + wifi.ip + ")"
                                                      : "Wi-Fi: Failed (" + wifi.errorReason +
                                                            ") - retrying in the background"));
   netWifiKeepConnected(wifiCreds.ssid, wifiCreds.password);

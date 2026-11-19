@@ -773,7 +773,7 @@ bool provisioningRun(const std::function<void(const String &qrPayload)> &onQrRea
       gWifiCredsPending = false;
       const String ssid = gPendingSsid;
       const String pass = gPendingWifiPassword;
-      Serial.println("[Prov] WIFI_CREDS for SSID '" + ssid + "'");
+      Serial.println("[Prov] WIFI_CREDS received");  // the network name stays out of the log
       report("Connecting to Wi-Fi\n\n" + ssid);
 
       JsonDocument st;

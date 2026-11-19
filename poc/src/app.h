@@ -17,3 +17,7 @@ bool appTakeTaskResult(const String &requestId, String &resultJson);
 
 // Host of the MQTT broker this boot connected to ("" if none).
 const String &appBrokerHost();
+
+// One serial-console key command (+ - s b a h H v V k p t w r ...), as if
+// typed on the USB serial console. The remote shell uses it (diag.cpp).
+void appSerialKey(char c);

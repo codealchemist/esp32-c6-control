@@ -186,6 +186,12 @@ struct Validator {
       if (!w["default"].isNull() && !w["default"].is<bool>()) {
         error(where, "switch.default must be a bool");
       }
+      // Optional: how to read the real state (a task whose reply carries
+      // "state": "on" | "off"). Without it, a tuyaScene "on" is used.
+      if (!w["state"].isNull() &&
+          (!w["state"].is<JsonObjectConst>() || !w["state"]["taskId"].is<const char *>())) {
+        error(where, "switch.state must be an object with a taskId");
+      }
       detail = "qos " + String(qos) + (w["expectsResult"] | false ? ", expects result" : "") +
                ", default " + (w["default"] | false ? "on" : "off");
     } else if (type == "folder") {

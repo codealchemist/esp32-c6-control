@@ -25,6 +25,7 @@
 #include "touch.h"
 #include "ui_layout.h"
 #include "app.h"
+#include "diag.h"
 #include "menu.h"
 
 namespace {
@@ -62,10 +63,15 @@ void diagPoll() {
                                              : (String(t.msSinceTouch / 1000) + "s ago").c_str());
 }
 
+void serialKey(char c);
+
 void serialCommandPoll() {
   diagPoll();
-  while (Serial.available() > 0) {
-    const int c = Serial.read();
+  while (Serial.available() > 0) serialKey((char)Serial.read());
+}
+
+void serialKey(char c) {
+  {
     // Serial stand-ins for the encoder, BOOT and touch actions, so every
     // screen is drivable from a console on boards without input wired:
     //   + / -  encoder turn      s  encoder push (open / set)
@@ -350,9 +356,16 @@ size_t gTaskResultNext = 0;
 void onlineService() {
   String cmd;
   if (netMqttTakeCommand(cmd)) {
-    Serial.println("[Command] " + cmd);
     JsonDocument doc;
-    if (deserializeJson(doc, cmd) != DeserializationError::Ok) {
+    const bool json = deserializeJson(doc, cmd) == DeserializationError::Ok;
+    const String action = json ? String(doc["action"] | "") : String("");
+    // Console diagnostics (telemetry, log stream renewals, shell lines) are
+    // frequent and print their own output: not echoed here.
+    const bool diag = json && diagHandleCommand(action, doc.as<JsonVariantConst>());
+    if (!diag) Serial.println("[Command] " + cmd);
+    if (diag) {
+      // handled by diag.cpp
+    } else if (!json) {
       Serial.println("[Command] not JSON - ignored");
     } else if (String(doc["action"] | "") == "weather_alert") {
       menuWeatherAlerts(doc.as<JsonVariantConst>());
@@ -400,10 +413,15 @@ void appPump() {
   netWifiPoll();
   phoneHidPoll();
   serialCommandPoll();
-  if (gOnline) onlineService();
+  if (gOnline) {
+    onlineService();
+    diagService();
+  }
 }
 
 const String &appBrokerHost() { return gBrokerHost; }
+
+void appSerialKey(char c) { serialKey(c); }
 
 bool appTakeTaskResult(const String &requestId, String &resultJson) {
   for (TaskResult &r : gTaskResults) {
@@ -523,6 +541,15 @@ void loop() {
     topics.config = mqttCfg.topicConfig;
     topics.commandResults = mqttCfg.topicCommandResults;
     topics.status = mqttCfg.topicStatus;
+    // Siblings of the status topic: devices/<id>/telemetry and /log.
+    {
+      const int slash = mqttCfg.topicStatus.lastIndexOf('/');
+      const String base = slash >= 0 ? mqttCfg.topicStatus.substring(0, slash + 1) : String("");
+      if (base.length()) {
+        topics.telemetry = base + "telemetry";
+        topics.log = base + "log";
+      }
+    }
     netMqttSetStatusInfo(String("\"fw\":\"") + __DATE__ + " " + __TIME__ + "\",\"configVersion\":" +
                          String(configActiveVersion()));
     if (!netMqttBegin(mqttCfg.brokerHost, mqttCfg.brokerPort, mqttCfg.useTls, mqttCfg.clientId,

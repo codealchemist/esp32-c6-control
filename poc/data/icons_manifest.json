@@ -182,6 +182,18 @@
       "size": 24,
       "license": "free-attribution",
       "file": "data/icons_src/icons8/icon_ic_sunset.png"
+    },
+    {
+      "id": "icon_heart",
+      "source": "like",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_heart.png"
+    },
+    {
+      "id": "icon_skip",
+      "source": "end",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_skip.png"
     }
   ]
 }

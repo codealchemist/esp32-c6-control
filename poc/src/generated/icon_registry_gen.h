@@ -33,6 +33,8 @@ extern const lv_image_dsc_t icon_ic_rain;
 extern const lv_image_dsc_t icon_ic_uv;
 extern const lv_image_dsc_t icon_ic_sunrise;
 extern const lv_image_dsc_t icon_ic_sunset;
+extern const lv_image_dsc_t icon_heart;
+extern const lv_image_dsc_t icon_skip;
 
 struct IconRegistryEntry { const char *id; const lv_image_dsc_t *img; };
 static const IconRegistryEntry kIconRegistry[] = {
@@ -60,5 +62,7 @@ static const IconRegistryEntry kIconRegistry[] = {
     {"icon_ic_uv", &icon_ic_uv},
     {"icon_ic_sunrise", &icon_ic_sunrise},
     {"icon_ic_sunset", &icon_ic_sunset},
+    {"icon_heart", &icon_heart},
+    {"icon_skip", &icon_skip},
 };
-static const size_t kIconRegistryCount = 24;
+static const size_t kIconRegistryCount = 26;

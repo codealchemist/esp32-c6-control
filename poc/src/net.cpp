@@ -115,6 +115,8 @@ String gMessagesTopic;
 String gConfigTopic;
 String gResultsTopic;
 String gStatusTopic;
+String gTelemetryTopic;
+String gLogTopic;
 String gStatusInfo;  // extra fields for the "online" message
 
 // Config documents, reassembled from MQTT fragments in the MQTT task and
@@ -351,6 +353,8 @@ bool netMqttBegin(const String &host, uint16_t port, bool useTls, const String &
   gConfigTopic = t.config;
   gResultsTopic = t.commandResults;
   gStatusTopic = t.status;
+  gTelemetryTopic = t.telemetry;
+  gLogTopic = t.log;
 
   const String uri = String(useTls ? "mqtts://" : "mqtt://") + host + ":" + String(port);
   esp_mqtt_client_config_t cfg = {};
@@ -471,6 +475,12 @@ bool netMqttPublishResult(const String &json) {
   if (!gClient || !gMqttConnected || gResultsTopic.length() == 0) return false;
   return esp_mqtt_client_publish(gClient, gResultsTopic.c_str(), json.c_str(), json.length(), 1,
                                  false) >= 0;
+}
+
+bool netMqttPublishDiag(DiagTopic topic, const char *payload, size_t len) {
+  const String &t = topic == DiagTopic::Telemetry ? gTelemetryTopic : gLogTopic;
+  if (!gClient || !gMqttConnected || t.length() == 0) return false;
+  return esp_mqtt_client_publish(gClient, t.c_str(), payload, len, 0, false) >= 0;
 }
 
 bool netMqttIsConnected() { return gClient != nullptr && gMqttConnected; }

@@ -473,30 +473,77 @@ void collectSwitches(JsonArrayConst nodes, std::vector<JsonObjectConst> &out) {
   }
 }
 
+// Ask the Core for one switch's real state. Switches with their own
+// `state` task (e.g. Spotify "liked") use it; others are read from the
+// lights their tuyaScene "on" acts on. False if there's nothing to ask.
+bool askSwitchState(JsonObjectConst n) {
+  const char *id = n["id"] | "?";
+  for (const SwitchSync &p : gSyncPending) {
+    if (strcmp(p.node["id"] | "", id) == 0) return false;  // already asked
+  }
+  JsonDocument node, spec, extra;
+  node["id"] = String(id) + "-state";
+  spec["qos"] = 1;
+  spec["expectsResult"] = true;
+  JsonObjectConst own = n["switch"]["state"];
+  if (!own.isNull()) {
+    spec["payload"]["taskId"] = own["taskId"] | "";
+    for (JsonPairConst kv : own) {
+      if (strcmp(kv.key().c_str(), "taskId") != 0) extra[kv.key()] = kv.value();
+    }
+  } else {
+    const char *onScene = n["switch"]["on"]["tuyaScene"] | "";
+    if (!*onScene) return false;  // nothing the Core could read it from
+    spec["payload"]["taskId"] = "switch-state";
+    extra["onScene"] = onScene;
+  }
+  String requestId;
+  if (!publishTask(node.as<JsonObjectConst>(), spec.as<JsonObjectConst>(),
+                   extra.as<JsonObjectConst>(), requestId)) {
+    return false;
+  }
+  gSyncPending.push_back({requestId, n, millis()});
+  return true;
+}
+
 void syncSwitches(const char *why) {
   if (!netMqttIsConnected()) return;  // try again on the next trigger
   std::vector<JsonObjectConst> switches;
   collectSwitches(configMenu(), switches);
   int asked = 0;
-  for (JsonObjectConst n : switches) {
-    const char *onScene = n["switch"]["on"]["tuyaScene"] | "";
-    if (!*onScene) continue;  // nothing the Core could read it from
-    JsonDocument node, spec, extra;
-    node["id"] = String(n["id"] | "?") + "-state";
-    spec["payload"]["taskId"] = "switch-state";
-    spec["qos"] = 1;
-    spec["expectsResult"] = true;
-    extra["onScene"] = onScene;
-    String requestId;
-    if (publishTask(node.as<JsonObjectConst>(), spec.as<JsonObjectConst>(),
-                    extra.as<JsonObjectConst>(), requestId)) {
-      gSyncPending.push_back({requestId, n, millis()});
-      asked++;
-    }
-  }
+  for (JsonObjectConst n : switches) asked += askSwitchState(n) ? 1 : 0;
   gSyncedOnce = true;
   gLastSync = millis();
   Serial.printf("[Switch] sync (%s): asked for %d switch state(s)\n", why, asked);
+}
+
+// "Live" switches (their own `state` task, e.g. the liked state of the
+// song playing now) go stale by themselves, so the page showing them reads
+// them whenever it opens and on every screen wake, not just every 10 min.
+JsonArrayConst gVisibleNodes;
+String gVisibleTitle;
+uint32_t gLastLiveSync = 0;
+
+void syncLiveSwitches(JsonArrayConst nodes, const char *why) {
+  if (!netMqttIsConnected() || nodes.isNull()) return;
+  if (gLastLiveSync && millis() - gLastLiveSync < 3000) return;  // a quick back-and-forth
+  int asked = 0;
+  for (JsonObjectConst n : nodes) {
+    if (String(n["type"] | "") == "switch" && !n["switch"]["state"].isNull()) asked += askSwitchState(n) ? 1 : 0;
+  }
+  if (asked) {
+    gLastLiveSync = millis();
+    Serial.printf("[Switch] live sync (%s): %d\n", why, asked);
+  }
+}
+
+// showLevel: this level is on screen (again). Reads its live switches when
+// it wasn't the one shown last (opened, or come back to from a folder).
+void noteVisibleLevel(JsonArrayConst nodes, const String &title) {
+  if (title == gVisibleTitle && gVisibleNodes == nodes) return;
+  gVisibleNodes = nodes;
+  gVisibleTitle = title;
+  if (gSyncedOnce) syncLiveSwitches(nodes, "open");
 }
 
 // Menu loop hook. True when a switch tile changed and the grid must redraw.
@@ -507,6 +554,7 @@ bool pollSwitchSync() {
     gSeenWake = displayWakeCount();
     const uint32_t every = settingsSwitchSyncSec();
     if (every > 0 && millis() - gLastSync >= every * 1000) syncSwitches("wake");
+    else syncLiveSwitches(gVisibleNodes, "wake");
   }
 
   bool changed = false;
@@ -2063,6 +2111,7 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
   while (true) {
     gTappedCell = -1;
     gGestured = false;
+    noteVisibleLevel(nodes, title);
     Grid g = drawGrid(nodes, page, selected, title, root, anim);
     anim = LV_SCREEN_LOAD_ANIM_NONE;
     if (n == 0) uiShow("home-empty", "No menu items\nin the active config", LV_SYMBOL_LIST);

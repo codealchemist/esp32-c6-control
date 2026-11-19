@@ -44,6 +44,8 @@ struct DeviceTopics {
   String config;          // subscribed: config pushes (docs/ARCHITECTURE.md §5.3)
   String commandResults;  // published: results, incl. config apply outcomes
   String status;          // published, retained: {"state":"online",...}; last will "offline"
+  String telemetry;       // published: CPU, memory, uptime... (diag.cpp)
+  String log;             // published while the console asks: the serial log
 };
 
 // Extra JSON fields for the retained "online" status message, without
@@ -86,6 +88,11 @@ bool netMqttTakeConfig(String &payloadOut);
 
 // Publishes a JSON payload to the commandResults topic (QoS 1).
 bool netMqttPublishResult(const String &json);
+
+// Publishes to the telemetry or log topic (QoS 0, not retained). Never
+// prints, so it's safe to call while streaming the log.
+enum class DiagTopic { Telemetry, Log };
+bool netMqttPublishDiag(DiagTopic topic, const char *payload, size_t len);
 
 bool netMqttIsConnected();
 

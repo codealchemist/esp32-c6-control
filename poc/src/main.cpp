@@ -362,7 +362,9 @@ void onlineService() {
     // Console diagnostics (telemetry, log stream renewals, shell lines) are
     // frequent and print their own output: not echoed here.
     const bool diag = json && diagHandleCommand(action, doc.as<JsonVariantConst>());
-    if (!diag) Serial.println("[Command] " + cmd);
+    // Player state replies (every 5 s while its page is open) aren't echoed either.
+    const bool playerState = json && action == "task_result" && doc["result"]["active"].is<bool>();
+    if (!diag && !playerState) Serial.println("[Command] " + cmd);
     if (diag) {
       // handled by diag.cpp
     } else if (!json) {

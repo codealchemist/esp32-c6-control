@@ -44,36 +44,53 @@
       "action": "volume"
     },
     {
-      "id": "spotify-like",
-      "type": "switch",
-      "label": "Liked",
-      "icon": "icon_heart",
-      "switch": {
-        "payload": {
-          "taskId": "spotify-like"
+      "id": "spotify",
+      "type": "folder",
+      "label": "Spotify",
+      "icon": "icon_spotify",
+      "children": [
+        {
+          "id": "spotify-like",
+          "type": "switch",
+          "label": "Liked",
+          "icon": "icon_heart",
+          "switch": {
+            "payload": {
+              "taskId": "spotify-like"
+            },
+            "qos": 1,
+            "expectsResult": true,
+            "default": false,
+            "state": {
+              "taskId": "spotify-liked"
+            }
+          },
+          "shortcut": true
         },
-        "qos": 1,
-        "expectsResult": true,
-        "default": false,
-        "state": {
-          "taskId": "spotify-liked"
+        {
+          "id": "spotify-skip",
+          "type": "task",
+          "label": "Skip & drop",
+          "icon": "icon_skip",
+          "task": {
+            "payload": {
+              "taskId": "spotify-skip-drop"
+            },
+            "qos": 1,
+            "expectsResult": true
+          },
+          "shortcut": true
+        },
+        {
+          "id": "spotify-player",
+          "type": "player",
+          "label": "Player",
+          "player": {
+            "taskId": "spotify-player",
+            "qos": 1
+          }
         }
-      },
-      "shortcut": true
-    },
-    {
-      "id": "spotify-skip",
-      "type": "task",
-      "label": "Skip & drop",
-      "icon": "icon_skip",
-      "task": {
-        "payload": {
-          "taskId": "spotify-skip-drop"
-        },
-        "qos": 1,
-        "expectsResult": true
-      },
-      "shortcut": true
+      ]
     },
     {
       "id": "weather",

@@ -194,6 +194,12 @@
       "source": "end",
       "license": "free-attribution",
       "file": "data/icons_src/icons8/icon_skip.png"
+    },
+    {
+      "id": "icon_spotify",
+      "source": "spotify",
+      "license": "free-attribution",
+      "file": "data/icons_src/icons8/icon_spotify.png"
     }
   ]
 }

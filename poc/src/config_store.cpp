@@ -203,6 +203,12 @@ struct Validator {
       } else if (!n["children"].is<JsonArrayConst>()) {
         error(where, "folder needs 'children' or a 'binding'");
       }
+    } else if (type == "player") {
+      // A page-sized player (menu.cpp): its task gets { cmd } and replies
+      // with the player state.
+      s.tasks++;
+      if (!n["player"]["taskId"].is<const char *>()) error(where, "player needs a taskId");
+      detail = String("player ") + (n["player"]["taskId"] | "?");
     } else if (type == "action") {
       s.actions++;
       const String action = n["action"] | "";

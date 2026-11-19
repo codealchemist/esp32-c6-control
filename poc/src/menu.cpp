@@ -133,7 +133,7 @@ bool collectParams(JsonObjectConst node, JsonObject out) {
 // state *change* for the Core's State Engine (a repeated "Lights On" would
 // otherwise be dropped as a heartbeat); the task travels in `metadata`.
 bool publishTask(JsonObjectConst node, JsonObjectConst spec, JsonObjectConst extra,
-                 String &requestId) {
+                 String &requestId, bool quiet = false) {
   const char *id = node["id"] | "?";
   requestId = newRequestId();
   JsonDocument ev;
@@ -151,7 +151,7 @@ bool publishTask(JsonObjectConst node, JsonObjectConst spec, JsonObjectConst ext
   String json;
   serializeJson(ev, json);
   const bool sent = netMqttPublishEvent(json, spec["qos"] | 1);
-  Serial.println("[Task] " + String(sent ? "sent " : "NOT sent ") + json);
+  if (!quiet || !sent) Serial.println("[Task] " + String(sent ? "sent " : "NOT sent ") + json);
   return sent;
 }
 
@@ -1677,14 +1677,15 @@ bool pollWeatherAlerts() {
 // --- Device details (home header tap) ------------------------------------------------
 //
 // Full pages like the menu's: Connection (Wi-Fi, IP, signal, MQTT broker,
-// Core version — asked from the Core when the page opens) and Device (chip,
-// memory, uptime, battery, firmware build). Swipe left/right (or turn the
+// Core version — asked from the Core when the page opens), Device (chip,
+// memory, uptime, battery, firmware build) and Restart (a button, confirmed). Swipe left/right (or turn the
 // encoder) to switch pages; back button, BOOT, swipe down, or swipe right /
 // turn left on the first page closes; so does
 // 30s without input. Values refresh every second.
 
 constexpr uint32_t kDetailsIdleMs = 30000;
-constexpr int kDetailsPages = 2;
+constexpr int kDetailsPages = 3;
+constexpr int kRestartPage = 2;
 constexpr int kDetailRows = 5;
 
 
@@ -1716,10 +1717,11 @@ struct DetailsPage {
 };
 
 DetailsPage drawDetailsPage(int page, lv_screen_load_anim_t anim) {
-  static const char *kTitles[kDetailsPages] = {"Connection", "Device"};
+  static const char *kTitles[kDetailsPages] = {"Connection", "Device", "Restart"};
   static const char *kLabels[kDetailsPages][kDetailRows] = {
       {"Wi-Fi", "IP", "Signal", "MQTT", "Core"},
-      {"Chip", "Free RAM", "Uptime", "Battery", "Firmware"}};
+      {"Chip", "Free RAM", "Uptime", "Battery", "Firmware"},
+      {}};
 
   lv_obj_t *scr = uiBlankScreen("device-details", anim);
   lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);
@@ -1733,6 +1735,31 @@ DetailsPage drawDetailsPage(int page, lv_screen_load_anim_t anim) {
     lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(d, i == page ? lv_color_white() : lv_palette_darken(LV_PALETTE_GREY, 2), 0);
     lv_obj_set_pos(d, 320 - 14 - (kDetailsPages - i) * 16 + 8, 22);
+  }
+
+  if (page == kRestartPage) {
+    // One button; tapping it (or pushing the knob) asks first.
+    lv_obj_t *hint = lv_label_create(scr);
+    lv_label_set_text(hint, "Restarts the panel. Settings and the\nmenu are kept; it's back in ~10 s.");
+    lv_obj_set_style_text_color(hint, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 44);
+    lv_obj_t *btn = lv_obj_create(scr);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, 200, 56);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 98);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(btn, lv_palette_darken(LV_PALETTE_RED, 3), 0);
+    lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_RED), LV_STATE_PRESSED);
+    lv_obj_add_event_cb(btn, [](lv_event_t *) { inputInject(InputEvent::EncoderPressShort); }, LV_EVENT_SHORT_CLICKED,
+                        nullptr);
+    lv_obj_t *l = lv_label_create(btn);
+    lv_label_set_text(l, LV_SYMBOL_REFRESH "  Restart");
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_20, 0);
+    lv_obj_center(l);
+    return {};
   }
 
   // Labels first, measured, so the value column starts past the widest one
@@ -1771,6 +1798,7 @@ void setValue(lv_obj_t *l, const String &text, lv_color_t color = lv_color_white
 }
 
 void fillDetailsPage(int page, const DetailsPage &p, const String &coreText) {
+  if (page == kRestartPage) return;
   const lv_color_t white = lv_color_white(), bad = lv_palette_main(LV_PALETTE_RED);
   if (page == 0) {
     const bool wifi = WiFi.status() == WL_CONNECTED;
@@ -1843,6 +1871,19 @@ void deviceDetailsScreen() {
       p = drawDetailsPage(page, fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT);
       lastRefresh = 0;
       Serial.printf("[Details] page %d/%d\n", page + 1, kDetailsPages);
+    } else if (ev == InputEvent::EncoderPressShort && page == kRestartPage) {
+      // The button (or the knob's push): ask, then restart.
+      if (confirm("Restart the panel?", "Restart")) {
+        uiShow("restarting", "Restarting...", LV_SYMBOL_REFRESH, lv_color_white());
+        Serial.println("[Details] restart");
+        for (int i = 0; i < 30; i++) {  // draw it, and let the log reach the console
+          appPump();
+          delay(10);
+        }
+        ESP.restart();
+      }
+      p = drawDetailsPage(page, LV_SCREEN_LOAD_ANIM_NONE);
+      lastRefresh = 0;
     } else if (ev != InputEvent::None) {
       if (ev == InputEvent::ShortcutPress) inputInject(ev);  // close, then run it
       return;  // back button / BOOT / swipe down
@@ -1935,15 +1976,279 @@ bool needsCore(JsonObjectConst n) {
   return t == "task" || t == "switch";
 }
 
+// --- Player page -------------------------------------------------------------------
+//
+// A "player" item fills a whole page of its folder: what's playing, a
+// progress bar, and prev / play-pause / next buttons. Its task
+// (player.taskId, e.g. "spotify-player") gets { cmd } and replies with the
+// player state: active, playing, song, by, device, progress, duration (ms),
+// volume (null: the device has none). While the page is on screen the panel
+// reads the state every 5 s; progress ticks locally in between.
+
+bool isPlayer(JsonObjectConst n) { return String(n["type"] | "") == "player"; }
+
+constexpr uint32_t kPlayerPollMs = 5000;
+constexpr uint32_t kPlayerReplyMs = 6000;
+constexpr uint32_t kPlayerNoteMs = 3000;
+
+struct Player {
+  String nodeId;  // whose state this is
+  bool known = false, active = false, playing = false;
+  String song, by, device;
+  int volume = -1;                         // -1: no volume control
+  uint32_t progress = 0, duration = 0, at = 0;  // progress (ms) as read at millis() `at`
+  String note;                             // last error, shown for a moment
+  uint32_t noteUntil = 0;
+  String requestId;                        // reply being waited for
+  uint32_t askedAt = 0;
+} gPlayer;
+
+struct PlayerUi {
+  lv_obj_t *song = nullptr, *by = nullptr, *bar = nullptr, *time = nullptr, *total = nullptr, *play = nullptr;
+} gPlayerUi;  // null when the player isn't on screen
+
+JsonDocument gPlayerNode;  // the node on screen (its id and task), for polling
+const char *gPlayerCmd = nullptr;  // the button just tapped
+
+void playerAsk(JsonObjectConst node, const char *cmd) {
+  if (!netMqttIsConnected()) {
+    gPlayer.note = "Offline";
+    gPlayer.noteUntil = millis() + kPlayerNoteMs;
+    return;
+  }
+  JsonDocument spec, extra;
+  spec["payload"]["taskId"] = node["player"]["taskId"] | "";
+  spec["qos"] = node["player"]["qos"] | 1;
+  spec["expectsResult"] = true;
+  extra["cmd"] = cmd;
+  String id;
+  // The 5 s state reads stay out of the log (they'd crowd out everything
+  // else in the console's log buffer); commands are logged.
+  const bool poll = !strcmp(cmd, "state");
+  if (publishTask(node, spec.as<JsonObjectConst>(), extra.as<JsonObjectConst>(), id, poll)) gPlayer.requestId = id;
+  gPlayer.askedAt = millis();
+}
+
+uint32_t playerProgress() {
+  if (!gPlayer.playing) return gPlayer.progress;
+  const uint32_t p = gPlayer.progress + (millis() - gPlayer.at);
+  return gPlayer.duration && p > gPlayer.duration ? gPlayer.duration : p;
+}
+
+String mmss(uint32_t ms) {
+  const uint32_t s = ms / 1000;
+  char b[12];
+  snprintf(b, sizeof b, "%lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+  return b;
+}
+
+// Fills the on-screen player from gPlayer (no redraw).
+void playerRefresh() {
+  if (!gPlayerUi.song) return;
+  const bool noting = !gPlayer.note.isEmpty() && (int32_t)(gPlayer.noteUntil - millis()) > 0;
+  const char *song = !gPlayer.known ? "Loading..." : gPlayer.active ? gPlayer.song.c_str() : "Nothing playing";
+  if (strcmp(lv_label_get_text(gPlayerUi.song), song) != 0) lv_label_set_text(gPlayerUi.song, song);
+  String by = noting ? gPlayer.note
+              : !gPlayer.known ? String("")
+              : gPlayer.active ? gPlayer.by + (gPlayer.device.isEmpty() ? "" : "  -  " + gPlayer.device)
+                               : String("Start Spotify on a device");
+  if (strcmp(lv_label_get_text(gPlayerUi.by), by.c_str()) != 0) lv_label_set_text(gPlayerUi.by, by.c_str());
+  lv_obj_set_style_text_color(gPlayerUi.by, noting ? lv_palette_main(LV_PALETTE_AMBER) : lv_palette_main(LV_PALETTE_GREY), 0);
+  const uint32_t p = playerProgress();
+  const bool timed = gPlayer.active && gPlayer.duration;
+  lv_bar_set_value(gPlayerUi.bar, timed ? (int32_t)((uint64_t)p * 1000 / gPlayer.duration) : 0, LV_ANIM_OFF);
+  lv_label_set_text(gPlayerUi.time, timed ? mmss(p).c_str() : "");
+  lv_label_set_text(gPlayerUi.total, timed ? mmss(gPlayer.duration).c_str() : "");
+  lv_label_set_text(gPlayerUi.play, gPlayer.playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+}
+
+// Grid loop hook while a player page is on screen: replies, polling, ticking.
+void pollPlayer() {
+  if (!gPlayerUi.song) return;
+  JsonObjectConst node = gPlayerNode.as<JsonObjectConst>();
+  String json;
+  if (!gPlayer.requestId.isEmpty() && appTakeTaskResult(gPlayer.requestId, json)) {
+    gPlayer.requestId = "";
+    JsonDocument d;
+    deserializeJson(d, json);
+    JsonObjectConst r = d["result"];
+    if (String(r["status"] | "") != "ok") {
+      gPlayer.note = r["message"] | "Player error";
+      gPlayer.noteUntil = millis() + kPlayerNoteMs;
+      gPlayer.known = true;
+    } else {
+      gPlayer.known = true;
+      gPlayer.active = r["active"] | false;
+      gPlayer.playing = r["playing"] | false;
+      gPlayer.song = r["song"] | "";
+      gPlayer.by = r["by"] | "";
+      gPlayer.device = r["device"] | "";
+      gPlayer.volume = r["volume"].is<int>() ? r["volume"].as<int>() : -1;
+      gPlayer.progress = r["progress"] | 0;
+      gPlayer.duration = r["duration"] | 0;
+      gPlayer.at = millis();
+      const String msg = r["message"] | "";
+      if (msg.startsWith("Volume") || msg.indexOf("no volume") >= 0) {
+        gPlayer.note = msg;
+        gPlayer.noteUntil = millis() + kPlayerNoteMs;
+      }
+    }
+  } else if (!gPlayer.requestId.isEmpty() && millis() - gPlayer.askedAt > kPlayerReplyMs) {
+    gPlayer.requestId = "";
+    gPlayer.note = "No reply from the server";
+    gPlayer.noteUntil = millis() + kPlayerNoteMs;
+  }
+  if (gPlayer.requestId.isEmpty()) {
+    const bool ended = gPlayer.playing && gPlayer.duration && playerProgress() >= gPlayer.duration &&
+                       millis() - gPlayer.askedAt > 1500;
+    if (millis() - gPlayer.askedAt >= kPlayerPollMs || ended) playerAsk(node, "state");
+  }
+  static uint32_t lastTick = 0;
+  if (millis() - lastTick >= 250) {
+    lastTick = millis();
+    playerRefresh();
+  }
+}
+
+// A button on the player: run its command (via the grid loop, like a tap).
+void onPlayerButton(lv_event_t *e) {
+  if (gGestured) return;
+  gPlayerCmd = static_cast<const char *>(lv_event_get_user_data(e));
+  gTappedCell = 0x7fff;  // marks a touch; the loop knows which item from the page
+  inputInject(InputEvent::EncoderPressShort);
+}
+
+// Runs a player command now, showing its likely effect until the reply.
+void playerCommand(JsonObjectConst node, const char *cmd) {
+  Serial.printf("[Player] %s\n", cmd);
+  if (!strcmp(cmd, "toggle") && gPlayer.active) {
+    gPlayer.progress = playerProgress();
+    gPlayer.at = millis();
+    gPlayer.playing = !gPlayer.playing;
+  }
+  playerAsk(node, cmd);
+  playerRefresh();
+}
+
+// Player layout, straight on the screen (no card), under the 30px header:
+//   song      33..63   28px, scrolls when long
+//   artist    66..83   14px grey: "Artist - Device", or a note in amber
+//   progress  86..100  elapsed | full-width bar | length
+//   buttons  110..166  prev | play/pause | next
+void drawPlayer(lv_obj_t *scr, JsonObjectConst node, bool selected) {
+  if (gPlayer.nodeId != String(node["id"] | "")) {
+    gPlayer = {};
+    gPlayer.nodeId = node["id"] | "";
+  }
+  gPlayerNode.set(node);
+  const bool dimmed = !netMqttIsConnected();
+  const lv_color_t grey = lv_palette_main(LV_PALETTE_GREY);
+  (void)selected;  // the knob's push plays/pauses; nothing else to highlight
+
+  gPlayerUi.song = lv_label_create(scr);
+  lv_obj_set_style_text_font(gPlayerUi.song, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(gPlayerUi.song, dimmed ? lv_palette_darken(LV_PALETTE_GREY, 2) : lv_color_white(), 0);
+  lv_obj_set_width(gPlayerUi.song, kW - 24);
+  lv_label_set_long_mode(gPlayerUi.song, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_style_anim_duration(gPlayerUi.song, lv_anim_speed_clamped(30, 1000, 20000), 0);
+  lv_label_set_text(gPlayerUi.song, "");
+  lv_obj_set_pos(gPlayerUi.song, 12, 33);
+
+  gPlayerUi.by = lv_label_create(scr);
+  lv_obj_set_style_text_font(gPlayerUi.by, &lv_font_montserrat_14, 0);
+  lv_obj_set_width(gPlayerUi.by, kW - 24);
+  lv_label_set_long_mode(gPlayerUi.by, LV_LABEL_LONG_DOT);
+  lv_label_set_text(gPlayerUi.by, "");
+  lv_obj_set_pos(gPlayerUi.by, 12, 66);
+
+  gPlayerUi.time = lv_label_create(scr);  // elapsed, left of the bar
+  lv_obj_set_style_text_font(gPlayerUi.time, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(gPlayerUi.time, grey, 0);
+  lv_obj_set_width(gPlayerUi.time, 40);
+  lv_label_set_text(gPlayerUi.time, "");
+  lv_obj_set_pos(gPlayerUi.time, 12, 86);
+
+  gPlayerUi.total = lv_label_create(scr);  // length, right of the bar
+  lv_obj_set_style_text_font(gPlayerUi.total, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(gPlayerUi.total, grey, 0);
+  lv_obj_set_width(gPlayerUi.total, 40);
+  lv_obj_set_style_text_align(gPlayerUi.total, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_label_set_text(gPlayerUi.total, "");
+  lv_obj_set_pos(gPlayerUi.total, kW - 12 - 40, 86);
+
+  gPlayerUi.bar = lv_bar_create(scr);
+  lv_obj_set_size(gPlayerUi.bar, kW - 2 * 58, 4);
+  lv_obj_set_pos(gPlayerUi.bar, 58, 93);
+  lv_bar_set_range(gPlayerUi.bar, 0, 1000);
+  lv_obj_set_style_bg_color(gPlayerUi.bar, lv_color_hex(0x3A3A3A), 0);
+  lv_obj_set_style_bg_opa(gPlayerUi.bar, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(gPlayerUi.bar, lv_palette_main(LV_PALETTE_GREEN), LV_PART_INDICATOR);
+
+  // prev | play/pause | next, centred, pill-shaped.
+  struct Btn { const char *cmd, *sym; int32_t w; };
+  static const Btn kBtns[] = {{"prev", LV_SYMBOL_PREV, 84}, {"toggle", LV_SYMBOL_PLAY, 104}, {"next", LV_SYMBOL_NEXT, 84}};
+  constexpr int32_t kGap = 12, kTop = 110, kBtnH = 56;
+  int32_t x = (kW - (84 + 104 + 84 + 2 * kGap)) / 2;
+  for (const Btn &b : kBtns) {
+    lv_obj_t *btn = lv_obj_create(scr);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_pos(btn, x, kTop);
+    lv_obj_set_size(btn, b.w, kBtnH);
+    x += b.w + kGap;
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    const bool main = !strcmp(b.cmd, "toggle");
+    lv_obj_set_style_bg_color(btn, main ? lv_palette_darken(LV_PALETTE_GREEN, 2) : lv_color_hex(0x1C1C1C), 0);
+    lv_obj_set_style_bg_color(btn, main ? lv_palette_main(LV_PALETTE_GREEN) : lv_color_hex(0x3A3A3A), LV_STATE_PRESSED);
+    lv_obj_add_event_cb(btn, onCellPressed, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(btn, onPlayerButton, LV_EVENT_CLICKED, const_cast<char *>(b.cmd));
+    lv_obj_t *l = lv_label_create(btn);
+    lv_label_set_text(l, b.sym);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(l, dimmed ? lv_palette_darken(LV_PALETTE_GREY, 2) : lv_color_white(), 0);
+    lv_obj_center(l);
+    if (main) gPlayerUi.play = l;
+  }
+  playerRefresh();
+}
+
+// Which items each page shows: two per page, except a player, which takes
+// a page of its own.
+struct PageSpan {
+  size_t start, count;
+};
+
+std::vector<PageSpan> pageSpans(JsonArrayConst nodes) {
+  std::vector<PageSpan> out;
+  const size_t n = nodes.size();
+  for (size_t i = 0; i < n;) {
+    size_t c = 1;
+    if (!isPlayer(nodes[i]) && i + 1 < n && !isPlayer(nodes[i + 1])) c = 2;
+    out.push_back({i, c});
+    i += c;
+  }
+  if (out.empty()) out.push_back({0, 0});
+  return out;
+}
+
+size_t pageOf(const std::vector<PageSpan> &spans, size_t idx) {
+  for (size_t p = 0; p < spans.size(); p++) {
+    if (idx < spans[p].start + spans[p].count) return p;
+  }
+  return 0;
+}
+
 struct Grid {
   lv_obj_t *status = nullptr;  // root only: connection label
 };
 
-Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &title, bool root,
-              lv_screen_load_anim_t anim) {
-  const size_t n = nodes.size();
-  const size_t pages = (n + 1) / 2;
+Grid drawGrid(JsonArrayConst nodes, const std::vector<PageSpan> &spans, size_t page, int selected,
+              const String &title, bool root, lv_screen_load_anim_t anim) {
+  const size_t pages = spans.size();
+  const PageSpan span = spans[page];
   Grid g;
+  gPlayerUi = {};
   lv_obj_t *scr = uiBlankScreen(root ? "home" : "menu", anim);
   lv_obj_add_event_cb(scr, onGesture, LV_EVENT_GESTURE, nullptr);
 
@@ -1990,12 +2295,16 @@ Grid drawGrid(JsonArrayConst nodes, size_t page, int selected, const String &tit
     }
   }
 
+  if (span.count == 1 && isPlayer(nodes[span.start])) {
+    drawPlayer(scr, nodes[span.start], static_cast<int>(span.start) == selected);
+    return g;
+  }
+
   // The two cells.
   const int32_t cellW = kW / 2 - 2 * kCellM;
   const int32_t cellH = kH - kHeaderH - kCellM;
-  for (size_t c = 0; c < 2; c++) {
-    const size_t idx = page * 2 + c;
-    if (idx >= n) break;
+  for (size_t c = 0; c < span.count; c++) {
+    const size_t idx = span.start + c;
     JsonObjectConst node = nodes[idx];
     lv_obj_t *cell = lv_obj_create(scr);
     lv_obj_remove_style_all(cell);
@@ -2100,7 +2409,8 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
   // How the next redraw arrives: entering a folder slides in from the right,
   // paging slides with the swipe, coming back from a folder slides from the left.
   lv_screen_load_anim_t anim = root ? LV_SCREEN_LOAD_ANIM_NONE : LV_SCREEN_LOAD_ANIM_MOVE_LEFT;
-  const size_t pages = n ? (n + 1) / 2 : 1;
+  const std::vector<PageSpan> spans = pageSpans(nodes);
+  const size_t pages = spans.size();
   // Opening a page with scene tiles: ask the Core which scene is active.
   for (JsonObjectConst node : nodes) {
     if (!String(node["task"]["payload"]["tuyaScene"] | "").isEmpty()) {
@@ -2108,14 +2418,19 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
       break;
     }
   }
+  bool redraw = true;
+  Link drawnLink = linkState();
   while (true) {
     gTappedCell = -1;
     gGestured = false;
-    noteVisibleLevel(nodes, title);
-    Grid g = drawGrid(nodes, page, selected, title, root, anim);
-    anim = LV_SCREEN_LOAD_ANIM_NONE;
-    if (n == 0) uiShow("home-empty", "No menu items\nin the active config", LV_SYMBOL_LIST);
-    const Link drawnLink = linkState();
+    if (redraw) {
+      noteVisibleLevel(nodes, title);
+      drawGrid(nodes, spans, page, selected, title, root, anim);
+      anim = LV_SCREEN_LOAD_ANIM_NONE;
+      if (n == 0) uiShow("home-empty", "No menu items\nin the active config", LV_SYMBOL_LIST);
+      drawnLink = linkState();
+    }
+    redraw = true;
 
     InputEvent ev = InputEvent::None;
     while (ev == InputEvent::None) {
@@ -2126,6 +2441,7 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
         const bool tasks = pollTileTasks();
         const bool synced = pollSwitchSync();
         pollShortcutPill();
+        pollPlayer();
         if (pollWeatherAlerts()) break;  // new alert shown / badge changed: redraw
         if (pollSceneState() || tasks || switchUndone || synced) break;  // a tile changed: redraw
       }
@@ -2162,16 +2478,25 @@ void showLevel(JsonArrayConst nodes, const String &title, bool root) {
             return;
           }
           const size_t before = page;
-          selected = selected < 0 ? static_cast<int>(page * 2)
+          selected = selected < 0 ? static_cast<int>(spans[page].start)
                                   : (fwd ? (selected + 1) % n : (selected + n - 1) % n);
-          page = selected / 2;
+          page = pageOf(spans, selected);
           if (page != before) anim = fwd ? LV_SCREEN_LOAD_ANIM_MOVE_LEFT : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;
         }
         break;
       }
       case InputEvent::EncoderPressShort: {
         if (n == 0) break;
-        const int idx = touched ? gTappedCell : (selected >= 0 ? selected : page * 2);
+        const PageSpan &sp = spans[page];
+        if (sp.count == 1 && isPlayer(nodes[sp.start])) {
+          // Player: a button runs its command; the knob's push plays/pauses.
+          // It updates in place, without a redraw.
+          playerCommand(nodes[sp.start], touched && gPlayerCmd ? gPlayerCmd : "toggle");
+          gPlayerCmd = nullptr;
+          redraw = false;
+          break;
+        }
+        const int idx = touched ? gTappedCell : (selected >= 0 ? selected : static_cast<int>(sp.start));
         if (!touched) selected = idx;
         openNode(nodes[idx], title);  // then redraw this level
         if (isFolder(nodes[idx])) anim = LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;  // back from it

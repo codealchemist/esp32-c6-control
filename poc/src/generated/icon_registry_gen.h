@@ -35,6 +35,7 @@ extern const lv_image_dsc_t icon_ic_sunrise;
 extern const lv_image_dsc_t icon_ic_sunset;
 extern const lv_image_dsc_t icon_heart;
 extern const lv_image_dsc_t icon_skip;
+extern const lv_image_dsc_t icon_spotify;
 
 struct IconRegistryEntry { const char *id; const lv_image_dsc_t *img; };
 static const IconRegistryEntry kIconRegistry[] = {
@@ -64,5 +65,6 @@ static const IconRegistryEntry kIconRegistry[] = {
     {"icon_ic_sunset", &icon_ic_sunset},
     {"icon_heart", &icon_heart},
     {"icon_skip", &icon_skip},
+    {"icon_spotify", &icon_spotify},
 };
-static const size_t kIconRegistryCount = 26;
+static const size_t kIconRegistryCount = 27;

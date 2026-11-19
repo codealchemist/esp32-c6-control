@@ -220,6 +220,13 @@ bool diagHandleCommand(const String &action, JsonVariantConst doc) {
     if (!gLogUntil) gLogUntil = 1;
     return true;
   }
+  if (action == "reboot") {
+    // From the console's Restart button.
+    Serial.println("[Diag] restart requested from the console");
+    sendLog();  // let a Logs page see it
+    delay(300);
+    ESP.restart();
+  }
   if (action == "shell") {
     runShell(String(doc["line"] | ""));
     return true;
